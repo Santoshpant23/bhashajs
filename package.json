@@ -1,0 +1,27 @@
+{
+  "name": "bhashajs",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The first i18n developer tool purpose-built for South Asian languages",
+  "author": "Santosh",
+  "license": "MIT",
+  "scripts": {
+    "dev:server": "cd packages/server && npm run dev",
+    "dev:dashboard": "cd packages/dashboard && npm run dev",
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:dashboard\"",
+    "build:server": "cd packages/server && npx tsc",
+    "build:dashboard": "cd packages/dashboard && npm run build",
+    "build:sdk": "cd packages/sdk && npm run build",
+    "build": "npm run build:server && npm run build:dashboard && npm run build:sdk",
+    "test:sdk": "cd packages/sdk && npm test",
+    "test:e2e": "cd packages/server && node test-e2e.mjs",
+    "test": "npm run test:sdk",
+    "docker:up": "docker compose up --build -d",
+    "docker:down": "docker compose down"
+  },
+  "workspaces": [
+    "packages/sdk",
+    "packages/server",
+    "packages/dashboard"
+  ]
+}

@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude Code
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test artifacts
+coverage/
+packages/server/test-e2e.mjs
+
+# Build info
+*.tsbuildinfo
+
+# Internal docs
+packages/CLAUDE.md.md
+
+# Docker
+mongo_data/

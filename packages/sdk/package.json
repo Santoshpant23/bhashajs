@@ -1,0 +1,62 @@
+{
+  "name": "bhasha-js",
+  "version": "0.1.0-beta.1",
+  "description": "The first i18n developer tool purpose-built for South Asian languages",
+  "author": "Santosh",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "i18n",
+    "internationalization",
+    "localization",
+    "react",
+    "hindi",
+    "bengali",
+    "urdu",
+    "tamil",
+    "telugu",
+    "gujarati",
+    "kannada",
+    "malayalam",
+    "sinhala",
+    "punjabi",
+    "south-asian",
+    "translation",
+    "multilingual",
+    "rtl",
+    "lakh-crore",
+    "pluralization"
+  ],
+  "peerDependencies": {
+    "react": ">=17.0.0",
+    "react-dom": ">=17.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tsup": "^8.0.0",
+    "typescript": "~5.6.2",
+    "vitest": "^4.1.0"
+  }
+}
