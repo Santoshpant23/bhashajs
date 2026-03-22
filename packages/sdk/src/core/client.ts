@@ -19,6 +19,7 @@ export class TranslationClient {
   private projectId: string;
   private apiUrl: string;
   private apiToken: string;
+  private projectKey: string;
 
   /**
    * Cache structure: { "hi": { "hero.title": "स्वागत" }, "bn": { ... } }
@@ -37,10 +38,16 @@ export class TranslationClient {
   /** List of supported languages, fetched from the project endpoint */
   private supportedLangs: string[] = [];
 
-  constructor(projectId: string, apiUrl: string, apiToken: string) {
+  constructor(projectId: string, apiUrl: string, apiToken: string, projectKey: string = "") {
     this.projectId = projectId;
     this.apiUrl = apiUrl;
     this.apiToken = apiToken;
+    this.projectKey = projectKey;
+  }
+
+  /** Whether this client uses the public SDK endpoints (API key auth) */
+  private get usePublicEndpoints(): boolean {
+    return !!this.projectKey;
   }
 
   /**
@@ -85,21 +92,26 @@ export class TranslationClient {
 
     // Already fetching? Wait for the existing promise
     // This prevents duplicate API calls in React Strict Mode
-    if (this.fetchPromises[lang]) {
+    if (lang in this.fetchPromises) {
       return this.fetchPromises[lang];
     }
 
     // Build the fetch promise
     const fetchPromise = (async () => {
       try {
-        const url = `${this.apiUrl}/translations/${this.projectId}?lang=${lang}`;
+        // Use public SDK endpoint when projectKey is set, otherwise use JWT endpoint
+        const url = this.usePublicEndpoints
+          ? `${this.apiUrl}/sdk/translations?lang=${lang}`
+          : `${this.apiUrl}/translations/${this.projectId}?lang=${lang}`;
 
         const headers: Record<string, string> = {
           "Content-Type": "application/json",
         };
 
-        // Attach auth token if provided
-        if (this.apiToken) {
+        // Attach the right auth header
+        if (this.usePublicEndpoints) {
+          headers["x-api-key"] = this.projectKey;
+        } else if (this.apiToken) {
           headers["Authorization"] = `Bearer ${this.apiToken}`;
         }
 
@@ -139,13 +151,18 @@ export class TranslationClient {
    */
   async fetchProjectInfo(): Promise<string[]> {
     try {
-      const url = `${this.apiUrl}/projects/${this.projectId}`;
+      // Use public SDK endpoint when projectKey is set
+      const url = this.usePublicEndpoints
+        ? `${this.apiUrl}/sdk/project`
+        : `${this.apiUrl}/projects/${this.projectId}`;
 
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
       };
 
-      if (this.apiToken) {
+      if (this.usePublicEndpoints) {
+        headers["x-api-key"] = this.projectKey;
+      } else if (this.apiToken) {
         headers["Authorization"] = `Bearer ${this.apiToken}`;
       }
 

@@ -38,10 +38,11 @@ interface I18nProviderProps extends BhashaConfig {
 }
 
 // Default API URL — developers override this if they self-host
-const DEFAULT_API_URL = "http://localhost:5000/api";
+const DEFAULT_API_URL = "https://bhashajs.tech/api";
 
 export function I18nProvider({
-  projectId,
+  projectId = "",
+  projectKey = "",
   defaultLang = "en",
   apiUrl = DEFAULT_API_URL,
   apiToken = "",
@@ -67,7 +68,7 @@ export function I18nProvider({
 
   // Create the client once on mount
   if (!clientRef.current) {
-    clientRef.current = new TranslationClient(projectId, apiUrl, apiToken);
+    clientRef.current = new TranslationClient(projectId, apiUrl, apiToken, projectKey);
 
     // If preloaded translations were provided, load them into cache immediately
     if (preloadedTranslations) {

@@ -15,6 +15,7 @@
 import { Router, Response } from "express";
 import { authMiddleware, AuthRequest } from "../middleware/auth";
 import { requireProjectRole, ProjectAuthRequest } from "../middleware/projectAuth";
+import crypto from "crypto";
 import Project from "../models/Project";
 import ProjectMember from "../models/ProjectMember";
 import Translation from "../models/Translation";
@@ -171,6 +172,33 @@ router.put(
       return sendSuccess(res, 200, project);
     } catch (e) {
       return sendError(res, 500, "Failed to update project");
+    }
+  }
+);
+
+// ─── REGENERATE API KEY ──────────────────────────────────────
+router.post(
+  "/:id/regenerate-key",
+  requireProjectRole("owner"),
+  async (req: ProjectAuthRequest, res: Response) => {
+    try {
+      const { id } = req.params;
+
+      const idError = validateObjectId(id as string, "Project ID");
+      if (idError) return sendError(res, 400, idError);
+
+      const newKey = `bjs_${crypto.randomBytes(24).toString("hex")}`;
+      const project = await Project.findByIdAndUpdate(
+        id,
+        { apiKey: newKey },
+        { new: true }
+      );
+
+      if (!project) return sendError(res, 404, "Project not found");
+
+      return sendSuccess(res, 200, { apiKey: project.apiKey });
+    } catch (e) {
+      return sendError(res, 500, "Failed to regenerate API key");
     }
   }
 );

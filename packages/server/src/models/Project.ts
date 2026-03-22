@@ -7,6 +7,7 @@
  */
 
 import mongoose, { Schema } from "mongoose";
+import crypto from "crypto";
 
 const projectSchema = new Schema({
   name: { type: String, required: true },
@@ -17,6 +18,11 @@ const projectSchema = new Schema({
   },
   defaultLanguage: { type: String, default: "en" },
   supportedLanguages: { type: [String], default: ["en", "hi"] },
+  apiKey: {
+    type: String,
+    unique: true,
+    default: () => `bjs_${crypto.randomBytes(24).toString("hex")}`,
+  },
   createdAt: { type: Date, default: Date.now },
 });
 

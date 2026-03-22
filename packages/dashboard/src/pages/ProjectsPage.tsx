@@ -22,6 +22,9 @@ import {
   Users,
   Copy,
   X,
+  Key,
+  RefreshCw,
+  Check,
 } from "lucide-react";
 
 interface Project {
@@ -29,6 +32,7 @@ interface Project {
   name: string;
   defaultLanguage: string;
   supportedLanguages: string[];
+  apiKey?: string;
   createdAt: string;
   myRole?: string; // "owner" | "translator" | "viewer"
 }
@@ -73,7 +77,7 @@ export default function ProjectsPage() {
 
   // Settings modal state
   const [showSettings, setShowSettings] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<"settings" | "team">("settings");
+  const [settingsTab, setSettingsTab] = useState<"settings" | "team" | "api-key">("settings");
   const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [editName, setEditName] = useState("");
   const [editLangs, setEditLangs] = useState<string[]>([]);
@@ -85,6 +89,10 @@ export default function ProjectsPage() {
   const [inviteLangs, setInviteLangs] = useState<string[]>([]);
   const [inviteLink, setInviteLink] = useState<string | null>(null);
   const [teamLoading, setTeamLoading] = useState(false);
+
+  // API key state
+  const [apiKeyCopied, setApiKeyCopied] = useState(false);
+  const [regeneratingKey, setRegeneratingKey] = useState(false);
 
   const { logout, userName } = useAuth();
   const navigate = useNavigate();
@@ -211,6 +219,34 @@ export default function ProjectsPage() {
     }
   }
 
+  // ─── API Key ────────────────────────────────────────────────
+  function copyApiKey() {
+    if (editingProject?.apiKey) {
+      navigator.clipboard.writeText(editingProject.apiKey);
+      setApiKeyCopied(true);
+      setTimeout(() => setApiKeyCopied(false), 2000);
+    }
+  }
+
+  async function regenerateApiKey() {
+    if (!editingProject) return;
+    if (!window.confirm("Regenerate API key? The old key will stop working immediately.")) return;
+    setRegeneratingKey(true);
+    try {
+      const res = await api.post(`/projects/${editingProject._id}/regenerate-key`);
+      const newKey = res.data.data.apiKey;
+      setEditingProject({ ...editingProject, apiKey: newKey });
+      // Also update in the projects list
+      setProjects((prev) =>
+        prev.map((p) => (p._id === editingProject._id ? { ...p, apiKey: newKey } : p))
+      );
+    } catch (e) {
+      alert(getErrorMessage(e));
+    } finally {
+      setRegeneratingKey(false);
+    }
+  }
+
   // ─── Language Toggle Helper ──────────────────────────────────
   function toggleLang(lang: string, setter: React.Dispatch<React.SetStateAction<string[]>>) {
     if (lang === "en") return;
@@ -324,6 +360,12 @@ export default function ProjectsPage() {
                 >
                   <Users size={14} /> Team
                 </button>
+                <button
+                  className={`modal-tab ${settingsTab === "api-key" ? "active" : ""}`}
+                  onClick={() => setSettingsTab("api-key")}
+                >
+                  <Key size={14} /> API Key
+                </button>
               </div>
 
               {/* Settings Tab */}
@@ -358,6 +400,51 @@ export default function ProjectsPage() {
                     <button className="btn-primary" onClick={saveSettings}>Save Changes</button>
                   </div>
                 </>
+              )}
+
+              {/* API Key Tab */}
+              {settingsTab === "api-key" && (
+                <div className="api-key-tab">
+                  <p className="api-key-desc">
+                    Use this API key in your app's SDK to fetch translations.
+                    Pass it as the <code>projectKey</code> prop in <code>&lt;I18nProvider&gt;</code>.
+                  </p>
+                  <div className="api-key-box">
+                    <code className="api-key-value">
+                      {editingProject.apiKey || "No key generated"}
+                    </code>
+                    <button
+                      className="btn-icon"
+                      onClick={copyApiKey}
+                      title="Copy API key"
+                    >
+                      {apiKeyCopied ? <Check size={14} /> : <Copy size={14} />}
+                    </button>
+                  </div>
+                  <div className="api-key-actions">
+                    <button
+                      className="btn-ghost btn-sm"
+                      onClick={regenerateApiKey}
+                      disabled={regeneratingKey}
+                    >
+                      <RefreshCw size={14} className={regeneratingKey ? "spin" : ""} />
+                      {regeneratingKey ? "Regenerating..." : "Regenerate Key"}
+                    </button>
+                  </div>
+                  <div className="api-key-usage">
+                    <h4>Quick Start</h4>
+                    <pre className="code-block">{`npm install bhasha-js`}</pre>
+                    <pre className="code-block">{`import { I18nProvider } from "bhasha-js";
+
+<I18nProvider
+  projectKey="${editingProject.apiKey || "bjs_your_key_here"}"
+  apiUrl="${window.location.origin}/api"
+  defaultLang="en"
+>
+  <App />
+</I18nProvider>`}</pre>
+                  </div>
+                </div>
               )}
 
               {/* Team Tab */}

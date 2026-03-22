@@ -14,8 +14,20 @@
  * This is the main setup developers do when integrating BhashaJS.
  */
 export interface BhashaConfig {
-  /** Your project ID from the BhashaJS dashboard */
-  projectId: string;
+  /**
+   * Your project ID from the BhashaJS dashboard.
+   * Required when using apiToken (JWT) auth.
+   * Not needed when using projectKey.
+   */
+  projectId?: string;
+
+  /**
+   * Your project API key (starts with "bjs_").
+   * Get this from Project Settings → API Key in the dashboard.
+   * This is the recommended auth method for client-side apps.
+   * Uses public /api/sdk/* endpoints — no JWT needed.
+   */
+  projectKey?: string;
 
   /**
    * The language to show by default when the app loads.

@@ -18,6 +18,7 @@ import teamRoutes from "./routes/team";
 import notificationRoutes from "./routes/notifications";
 import commentRoutes from "./routes/comments";
 import glossaryRoutes from "./routes/glossary";
+import sdkRoutes from "./routes/sdk";
 
 dotenv.config();
 
@@ -65,7 +66,10 @@ app.get("/api/health", (req, res) => {
   res.json({ success: true, data: { status: "ok" } });
 });
 
-// ─── Routes ──────────────────────────────────────────────────
+// ─── Public SDK routes (API key auth, no JWT) ───────────────
+app.use("/api/sdk", sdkRoutes);
+
+// ─── Routes (JWT auth) ──────────────────────────────────────
 app.use("/api/auth", authRoutes);
 app.use("/api/projects", projectRoutes);
 app.use("/api/translations", translationRoutes);
