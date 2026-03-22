@@ -33,7 +33,7 @@ export function authMiddleware(
     // Verify token and extract the userId payload
     const decoded = jwt.verify(
       token,
-      process.env.JWT_SECRET || "fallback-secret"
+      process.env.JWT_SECRET!
     ) as { userId: string };
 
     req.userId = decoded.userId;

@@ -22,6 +22,16 @@ import sdkRoutes from "./routes/sdk";
 
 dotenv.config();
 
+// ─── Validate required env vars ─────────────────────────────
+const REQUIRED_ENV = ["JWT_SECRET", "MONGO_CONNECTION_URL"];
+for (const key of REQUIRED_ENV) {
+  if (!process.env[key]) {
+    console.error(`FATAL: Missing required environment variable: ${key}`);
+    console.error("Copy .env.example to .env and fill in your values.");
+    process.exit(1);
+  }
+}
+
 const app = express();
 
 // ─── Middleware ───────────────────────────────────────────────

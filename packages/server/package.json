@@ -1,14 +1,16 @@
 {
-  "name": "server",
+  "name": "bhashajs-server",
   "version": "1.0.0",
-  "description": "",
+  "private": true,
+  "description": "BhashaJS API server",
   "main": "index.js",
   "scripts": {
+    "dev": "ts-node-dev --respawn src/index.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "author": "Santosh",
+  "license": "MIT",
   "type": "commonjs",
   "dependencies": {
     "@google/generative-ai": "^0.24.1",

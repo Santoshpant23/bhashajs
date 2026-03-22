@@ -11,8 +11,8 @@ import {
   useLangInfo,
 } from "bhashajs";
 
-// Replace with your actual project ID from MongoDB
-const PROJECT_ID = "69bc3ae900d07b56f72065ec";
+// Replace with your actual project ID from the dashboard
+const PROJECT_ID = "YOUR_PROJECT_ID";
 
 // This is the "inner" app that uses translations
 function DemoContent() {

@@ -5,10 +5,11 @@ node_modules/
 dist/
 build/
 
-# Environment
+# Environment — NEVER commit real secrets
 .env
 .env.local
 .env.*.local
+packages/**/.env
 
 # IDE
 .vscode/
