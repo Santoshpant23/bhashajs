@@ -9,7 +9,7 @@ import {
   LanguageSwitcher,
   Trans,
   useLangInfo,
-} from "bhashajs";
+} from "bhasha-js";
 
 // Replace with your actual project ID from the dashboard
 const PROJECT_ID = "YOUR_PROJECT_ID";
@@ -88,13 +88,14 @@ function DemoContent() {
 
 // The outer wrapper — sets up the I18nProvider
 export default function DemoPage() {
+  const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
   return (
     <I18nProvider
       projectId={PROJECT_ID}
-      apiUrl="http://localhost:5000/api"
+      apiUrl={apiUrl}
       apiToken={localStorage.getItem("bhashajs_token") || ""}
       defaultLang="en"
-      onLanguageChange={(lang) => console.log("Language changed to:", lang)}
+      onLanguageChange={(lang: string) => console.log("Language changed to:", lang)}
     >
       <DemoContent />
     </I18nProvider>

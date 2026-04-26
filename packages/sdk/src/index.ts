@@ -19,7 +19,7 @@
 //     formatCurrency,
 //     formatDate,
 //     getPluralCategory,
-//   } from 'bhashajs';
+//   } from 'bhasha-js';
 //
 // We organize exports into categories so it's clear what's available.
 
