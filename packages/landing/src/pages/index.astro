@@ -1,0 +1,246 @@
+---
+import Layout from "../layouts/Layout.astro";
+import Nav from "../components/Nav.astro";
+import Footer from "../components/Footer.astro";
+
+const title = "bhasha-js — React i18n for Hindi, Bengali, Urdu & 11 more South Asian languages";
+const description = "The first React i18n library purpose-built for South Asian languages. Auto RTL for Urdu, lakh/crore number formatting (₹12,34,567), native digits, region-aware currency, and CLDR plurals — out of the box for 14 languages.";
+---
+
+<Layout title={title} description={description}>
+  <Nav />
+
+  <!-- HERO -->
+  <section style="padding-top: 5rem; padding-bottom: 3rem;">
+    <div class="container" style="text-align: center;">
+      <div style="display: inline-block; padding: 0.4rem 0.9rem; border-radius: 999px; background: rgba(255, 107, 44, 0.12); color: var(--brand-light); font-size: 0.85rem; font-weight: 600; margin-bottom: 1.5rem;">
+        ✦ React i18n built for South Asia
+      </div>
+      <h1 style="margin-bottom: 1.5rem;">
+        i18n that actually understands<br/>
+        <span style="background: linear-gradient(90deg, #FF6B2C, #FFA275); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">हिन्दी, বাংলা, اردو</span> &amp; 11 more
+      </h1>
+      <p style="font-size: 1.2rem; max-width: 640px; margin: 0 auto 2.5rem; color: var(--text-dim);">
+        Auto RTL switching for Urdu. <code>₹12,34,567</code> instead of <code>$1,234,567</code>. Native digit rendering. Right Google Font for every script. CLDR plurals where Hindi correctly treats 0 as singular. All in 4 lines of setup.
+      </p>
+      <div style="display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; margin-bottom: 3rem;">
+        <a href="/docs/quickstart/" class="btn btn-primary">Get started →</a>
+        <a href="https://github.com/santoshpant613/bhashajs" class="btn btn-secondary" target="_blank" rel="noopener">View on GitHub</a>
+      </div>
+      <pre style="text-align: left; max-width: 720px; margin: 0 auto;"><code><span class="tok-cmt"># install</span>
+<span class="tok-fn">npm install</span> bhasha-js
+
+<span class="tok-cmt"># wrap your app</span>
+<span class="tok-kw">import</span> &#123; <span class="tok-key">I18nProvider</span>, <span class="tok-key">useTranslation</span>, <span class="tok-key">LanguageSwitcher</span> &#125; <span class="tok-kw">from</span> <span class="tok-str">"bhasha-js"</span>;
+
+<span class="tok-kw">function</span> <span class="tok-fn">App</span>() &#123;
+  <span class="tok-kw">return</span> (
+    &lt;<span class="tok-key">I18nProvider</span> projectKey=<span class="tok-str">"bjs_..."</span> defaultLang=<span class="tok-str">"en"</span>&gt;
+      &lt;<span class="tok-key">LanguageSwitcher</span> /&gt;
+      &lt;<span class="tok-key">YourPage</span> /&gt;
+    &lt;/<span class="tok-key">I18nProvider</span>&gt;
+  );
+&#125;</code></pre>
+    </div>
+  </section>
+
+  <!-- TRUST BAR / NUMBERS -->
+  <section style="padding: 2rem 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: var(--bg-elev);">
+    <div class="container" style="display: flex; justify-content: space-around; flex-wrap: wrap; gap: 2rem; text-align: center;">
+      <div>
+        <div style="font-size: 2rem; font-weight: 700; color: var(--brand);">14</div>
+        <div style="color: var(--text-dim); font-size: 0.9rem;">Languages</div>
+      </div>
+      <div>
+        <div style="font-size: 2rem; font-weight: 700; color: var(--brand);">~1.8B</div>
+        <div style="color: var(--text-dim); font-size: 0.9rem;">Speakers covered</div>
+      </div>
+      <div>
+        <div style="font-size: 2rem; font-weight: 700; color: var(--brand);">CLDR</div>
+        <div style="color: var(--text-dim); font-size: 0.9rem;">Plural rules</div>
+      </div>
+      <div>
+        <div style="font-size: 2rem; font-weight: 700; color: var(--brand);">MIT</div>
+        <div style="color: var(--text-dim); font-size: 0.9rem;">Open source</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- WHY -->
+  <section id="why">
+    <div class="container">
+      <div class="section-head">
+        <h2>Why a separate library?</h2>
+        <p>Generic i18n tools like i18next are technically language-agnostic. They support Hindi the same way they support German. That isn't enough.</p>
+      </div>
+      <div style="overflow-x: auto;">
+        <table>
+          <thead>
+            <tr>
+              <th></th>
+              <th>i18next / react-intl</th>
+              <th style="color: var(--brand-light);">bhasha-js</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>Auto RTL switch</td><td>Manual setup</td><td>Automatic for Urdu</td></tr>
+            <tr><td>Script-aware fonts</td><td>Your problem</td><td>Auto-loads correct Google Font</td></tr>
+            <tr><td>Lakh/crore grouping</td><td>Generic Intl</td><td>12,34,567 not 1,234,567</td></tr>
+            <tr><td>Native digits</td><td>Manual</td><td>१२,३४,५६७ / ১২,৩৪,৫৬৭ / ௧௨,௩௪,௫௬௭</td></tr>
+            <tr><td>Plural rules</td><td>Configure each</td><td>Built-in CLDR for 14 languages</td></tr>
+            <tr><td>Fallback chain</td><td>language → English</td><td>Bengali → Hindi → English (culturally aware)</td></tr>
+            <tr><td>Currency</td><td>Your problem</td><td>Region-aware: ₹ for IN, ৳ for BD, Rs for PK</td></tr>
+            <tr><td>South Asian focus</td><td>Generic</td><td>Purpose-built, 14 languages pre-configured</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- FEATURES -->
+  <section id="features" style="background: var(--bg-elev);">
+    <div class="container">
+      <div class="section-head">
+        <h2>Everything South Asian apps actually need</h2>
+        <p>Wrap your app in <code>&lt;I18nProvider&gt;</code> once. The rest happens automatically.</p>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.25rem;">
+        <div class="card">
+          <h3 style="margin-bottom: 0.5rem;">→ Auto RTL switching</h3>
+          <p style="font-size: 0.95rem;">Switch to Urdu and the entire layout flips. <code>&lt;html dir="rtl"&gt;</code> set automatically. Switch to Hindi, it flips back. Zero config.</p>
+        </div>
+        <div class="card">
+          <h3 style="margin-bottom: 0.5rem;">→ Right font for every script</h3>
+          <p style="font-size: 0.95rem;">Hindi gets Noto Devanagari. Tamil gets Noto Tamil. Urdu gets Noto Nastaliq. Loaded on demand, exposed as <code>--bhasha-font</code>.</p>
+        </div>
+        <div class="card">
+          <h3 style="margin-bottom: 0.5rem;">→ Lakh/crore + native digits</h3>
+          <p style="font-size: 0.95rem; font-family: 'Noto Sans Devanagari', sans-serif;">
+            <code>formatNumber(1234567, "hi")</code> → <strong style="color: var(--text);">12,34,567</strong><br/>
+            with <code>useNativeDigits</code> → <strong style="color: var(--text);">१२,३४,५६७</strong><br/>
+            <code>compact: true</code> → <strong style="color: var(--text);">15 लाख</strong>
+          </p>
+        </div>
+        <div class="card">
+          <h3 style="margin-bottom: 0.5rem;">→ Region-aware currency</h3>
+          <p style="font-size: 0.95rem;">
+            Bengali in India? <strong style="color: var(--text);">₹</strong>. Bengali in Bangladesh? <strong style="color: var(--text);">৳</strong>. Tamil in Sri Lanka? <strong style="color: var(--text);">Rs (LKR)</strong>. One <code>region</code> prop.
+          </p>
+        </div>
+        <div class="card">
+          <h3 style="margin-bottom: 0.5rem;">→ Plurals that actually work</h3>
+          <p style="font-size: 0.95rem;">
+            English: 0 items (plural). Hindi: 0 आइटम (singular). bhasha-js gets this right via CLDR — and applies the correct rule for all 14 languages automatically.
+          </p>
+        </div>
+        <div class="card">
+          <h3 style="margin-bottom: 0.5rem;">→ Culturally-aware fallbacks</h3>
+          <p style="font-size: 0.95rem;">
+            Bengali key missing? Falls back to Hindi, then English. Tamil key missing? Skips Hindi entirely (different language family) and goes to English.
+          </p>
+        </div>
+        <div class="card">
+          <h3 style="margin-bottom: 0.5rem;">→ AI translation, dashboard, team review</h3>
+          <p style="font-size: 0.95rem;">
+            Sign up for the hosted version, paste your English strings, and one-click translate to Hindi/Bengali/Urdu/Tamil/etc. Translators on your team can review/approve.
+          </p>
+        </div>
+        <div class="card">
+          <h3 style="margin-bottom: 0.5rem;">→ Self-host for free</h3>
+          <p style="font-size: 0.95rem;">
+            Don't want a SaaS? <code>docker compose up</code> and run the whole stack on your own infra. Same SDK, your URL.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 MODES -->
+  <section id="install">
+    <div class="container">
+      <div class="section-head">
+        <h2>Three ways to install</h2>
+        <p>Same API. Pick the one that fits your project — switch later if needed.</p>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.25rem;">
+
+        <div class="card">
+          <div style="font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.5rem;">Mode 1 — Bundled</div>
+          <h3 style="margin-bottom: 0.75rem;">No backend, 30 seconds</h3>
+          <p style="margin-bottom: 1rem; font-size: 0.95rem;">Drop in your translation JSON. Get RTL + fonts + lakh/crore + plurals for free.</p>
+          <pre style="font-size: 0.8rem; padding: 1rem;"><code>&lt;<span class="tok-key">I18nProvider</span>
+  preloadedTranslations=&#123;json&#125;
+  defaultLang=<span class="tok-str">"en"</span>&gt;
+  &lt;<span class="tok-key">App</span> /&gt;
+&lt;/<span class="tok-key">I18nProvider</span>&gt;</code></pre>
+        </div>
+
+        <div class="card" style="border-color: var(--brand);">
+          <div style="font-size: 0.8rem; color: var(--brand); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.5rem;">Mode 2 — Hosted ★</div>
+          <h3 style="margin-bottom: 0.75rem;">Dashboard + AI</h3>
+          <p style="margin-bottom: 1rem; font-size: 0.95rem;">Sign up, create a project, paste API key. Manage translations in a UI with AI + team review.</p>
+          <pre style="font-size: 0.8rem; padding: 1rem;"><code>&lt;<span class="tok-key">I18nProvider</span>
+  projectKey=<span class="tok-str">"bjs_..."</span>
+  defaultLang=<span class="tok-str">"en"</span>&gt;
+  &lt;<span class="tok-key">App</span> /&gt;
+&lt;/<span class="tok-key">I18nProvider</span>&gt;</code></pre>
+        </div>
+
+        <div class="card">
+          <div style="font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.5rem;">Mode 3 — Self-hosted</div>
+          <h3 style="margin-bottom: 0.75rem;">Run it yourself</h3>
+          <p style="margin-bottom: 1rem; font-size: 0.95rem;">Open source. <code>docker compose up</code> on your VPS. Point the SDK at your URL.</p>
+          <pre style="font-size: 0.8rem; padding: 1rem;"><code>&lt;<span class="tok-key">I18nProvider</span>
+  projectKey=<span class="tok-str">"bjs_..."</span>
+  apiUrl=<span class="tok-str">"https://i18n.you.com"</span>&gt;
+  &lt;<span class="tok-key">App</span> /&gt;
+&lt;/<span class="tok-key">I18nProvider</span>&gt;</code></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- LANGUAGES STRIP -->
+  <section style="background: var(--bg-elev);">
+    <div class="container">
+      <div class="section-head">
+        <h2>14 languages, one library</h2>
+        <p>Every script pre-configured. Native names render with the correct font even on this page.</p>
+      </div>
+      <div style="display: flex; flex-wrap: wrap; justify-content: center; gap: 0.75rem;">
+        <span style="padding: 0.5rem 1rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; font-family: 'Noto Sans Devanagari', sans-serif;">हिन्दी</span>
+        <span style="padding: 0.5rem 1rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; font-family: 'Noto Sans Bengali', sans-serif;">বাংলা</span>
+        <span style="padding: 0.5rem 1rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; font-family: 'Noto Nastaliq Urdu', serif;">اردو</span>
+        <span style="padding: 0.5rem 1rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; font-family: 'Noto Sans Tamil', sans-serif;">தமிழ்</span>
+        <span style="padding: 0.5rem 1rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px;">తెలుగు</span>
+        <span style="padding: 0.5rem 1rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; font-family: 'Noto Sans Devanagari', sans-serif;">मराठी</span>
+        <span style="padding: 0.5rem 1rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px;">ગુજરાતી</span>
+        <span style="padding: 0.5rem 1rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px;">ಕನ್ನಡ</span>
+        <span style="padding: 0.5rem 1rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px;">മലയാളം</span>
+        <span style="padding: 0.5rem 1rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; font-family: 'Noto Sans Devanagari', sans-serif;">नेपाली</span>
+        <span style="padding: 0.5rem 1rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px;">ਪੰਜਾਬੀ</span>
+        <span style="padding: 0.5rem 1rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px;">සිංහල</span>
+        <span style="padding: 0.5rem 1rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px;">English</span>
+      </div>
+      <div style="text-align: center; margin-top: 2rem;">
+        <a href="/docs/languages/" class="btn btn-secondary">See full language details →</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section>
+    <div class="container" style="text-align: center;">
+      <h2 style="margin-bottom: 1rem;">Ship South Asian i18n today</h2>
+      <p style="max-width: 520px; margin: 0 auto 2rem; font-size: 1.1rem;">
+        Free to start. Open source. No credit card.
+      </p>
+      <div style="display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap;">
+        <a href="https://app.bhashajs.com/register" class="btn btn-primary">Sign up free</a>
+        <a href="/docs/quickstart/" class="btn btn-secondary">Read the quickstart</a>
+      </div>
+    </div>
+  </section>
+
+  <Footer />
+</Layout>

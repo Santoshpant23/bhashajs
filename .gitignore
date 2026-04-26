@@ -40,3 +40,9 @@ packages/CLAUDE.md.md
 
 # Docker
 mongo_data/
+
+# Local testing sandbox (never commit)
+_sandbox/
+
+# npm pack output — build artifact, regenerated on every release
+*.tgz

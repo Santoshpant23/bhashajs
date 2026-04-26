@@ -1,0 +1,48 @@
+---
+import DocLayout from "../../components/DocLayout.astro";
+---
+
+<DocLayout
+  title="Get started"
+  description="Learn how to install bhasha-js, the React i18n library purpose-built for Hindi, Bengali, Urdu, Tamil and 10 more South Asian languages."
+>
+  <h1>bhasha-js documentation</h1>
+  <p>The React i18n library purpose-built for South Asian languages. <strong>Auto RTL switching, lakh/crore numbers, native digits, region-aware currency, CLDR plurals</strong> — pre-configured for 14 languages.</p>
+
+  <h2>What is bhasha-js?</h2>
+  <p>If your app needs to support Hindi, Bengali, Urdu, Tamil, Telugu, Marathi, Punjabi, Gujarati, Kannada, Malayalam, Nepali, or Sinhala, generic i18n libraries like <code>i18next</code> and <code>react-intl</code> work — but they make you assemble RTL handling, font loading, lakh/crore grouping, and per-language plural rules yourself.</p>
+  <p>bhasha-js does all of that out of the box, and exposes the standard i18n surface (<code>t()</code>, <code>useTranslation</code>, <code>&lt;LanguageSwitcher /&gt;</code>) on top.</p>
+
+  <h2>Where to next</h2>
+  <ul>
+    <li><a href="/docs/quickstart/"><strong>Quickstart</strong></a> — pick one of three install modes and have a working translated page in 5 minutes.</li>
+    <li><a href="/docs/api/"><strong>API reference</strong></a> — every prop, hook, and utility documented.</li>
+    <li><a href="/docs/languages/"><strong>Supported languages</strong></a> — the 14 languages, their fonts, fallback chains, default currencies, and pluralization rules.</li>
+    <li><a href="/docs/self-hosting/"><strong>Self-hosting</strong></a> — run the entire stack on your own infra.</li>
+  </ul>
+
+  <h2>Three install modes</h2>
+  <p>bhasha-js works in three configurations. The SDK API is identical in all three; only the <code>&lt;I18nProvider&gt;</code> setup differs.</p>
+
+  <h3>Mode 1 — Bundled translations (no backend)</h3>
+  <p>Best for static sites or apps with a small fixed string set. Translations live in your repo as JSON, ship in your bundle.</p>
+  <pre><code>&lt;I18nProvider preloadedTranslations=&#123;json&#125; defaultLang=<span class="tok-str">"en"</span>&gt;
+  &lt;App /&gt;
+&lt;/I18nProvider&gt;</code></pre>
+
+  <h3>Mode 2 — Hosted dashboard (recommended)</h3>
+  <p>Sign up at <a href="https://app.bhashajs.com">app.bhashajs.com</a>, create a project, copy your API key. Translations are managed in a UI with AI translation, team review, glossary, and version history.</p>
+  <pre><code>&lt;I18nProvider projectKey=<span class="tok-str">"bjs_..."</span> defaultLang=<span class="tok-str">"en"</span>&gt;
+  &lt;App /&gt;
+&lt;/I18nProvider&gt;</code></pre>
+
+  <h3>Mode 3 — Self-hosted</h3>
+  <p>Run the open-source backend on your own infra. <a href="/docs/self-hosting/">Self-hosting guide →</a></p>
+
+  <h2>Get help</h2>
+  <ul>
+    <li><a href="https://github.com/santoshpant613/bhashajs/issues">GitHub issues</a> — bugs and feature requests</li>
+    <li><a href="https://github.com/santoshpant613/bhashajs">GitHub repo</a> — source code, examples</li>
+    <li><a href="https://www.npmjs.com/package/bhasha-js">npm</a> — package page</li>
+  </ul>
+</DocLayout>

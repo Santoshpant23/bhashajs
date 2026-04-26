@@ -36,8 +36,15 @@ const app = express();
 
 // ─── Middleware ───────────────────────────────────────────────
 app.use(express.json({ limit: "1mb" }));
+
+// CORS — accept a comma-separated list, or "*" for any origin.
+// In production set CORS_ORIGIN="https://bhashajs.com,https://app.bhashajs.com"
+const rawOrigin = process.env.CORS_ORIGIN || "*";
+const allowedOrigins = rawOrigin === "*"
+  ? "*"
+  : rawOrigin.split(",").map(s => s.trim()).filter(Boolean);
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || "*",
+  origin: allowedOrigins,
   credentials: true,
 }));
 app.use(helmet());

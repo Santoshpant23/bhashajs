@@ -96,10 +96,10 @@ export class TranslationClient {
       return this.fetchPromises[lang];
     }
 
-    // Build the fetch promise
+    // Build the fetch promise. Errors propagate so the I18nProvider can expose
+    // them via its `error` state — silent failure made auth bugs invisible.
     const fetchPromise = (async () => {
       try {
-        // Use public SDK endpoint when projectKey is set, otherwise use JWT endpoint
         const url = this.usePublicEndpoints
           ? `${this.apiUrl}/sdk/translations?lang=${lang}`
           : `${this.apiUrl}/translations/${this.projectId}?lang=${lang}`;
@@ -108,7 +108,6 @@ export class TranslationClient {
           "Content-Type": "application/json",
         };
 
-        // Attach the right auth header
         if (this.usePublicEndpoints) {
           headers["x-api-key"] = this.projectKey;
         } else if (this.apiToken) {
@@ -118,24 +117,18 @@ export class TranslationClient {
         const response = await fetch(url, { headers });
 
         if (!response.ok) {
-          throw new Error(`Failed to fetch translations: ${response.status}`);
+          const detail = await response.text().catch(() => "");
+          throw new Error(
+            `BhashaJS: failed to load translations for "${lang}" (HTTP ${response.status})${detail ? ": " + detail : ""}`
+          );
         }
 
         const json = await response.json();
-
-        // Our API returns { success: true, data: { ... } }
         const translations = json.data || json;
 
-        // Cache the result
         this.cache[lang] = translations;
-
         return translations;
-      } catch (error) {
-        console.error(`[BhashaJS] Failed to load translations for "${lang}":`, error);
-        // Return empty object so the app doesn't crash
-        return {};
       } finally {
-        // Clean up the promise tracker
         delete this.fetchPromises[lang];
       }
     })();
@@ -148,39 +141,37 @@ export class TranslationClient {
 
   /**
    * Fetch project info to get the list of supported languages.
+   * Throws on auth/network failure so the provider can surface the error.
    */
   async fetchProjectInfo(): Promise<string[]> {
-    try {
-      // Use public SDK endpoint when projectKey is set
-      const url = this.usePublicEndpoints
-        ? `${this.apiUrl}/sdk/project`
-        : `${this.apiUrl}/projects/${this.projectId}`;
+    const url = this.usePublicEndpoints
+      ? `${this.apiUrl}/sdk/project`
+      : `${this.apiUrl}/projects/${this.projectId}`;
 
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-      };
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
 
-      if (this.usePublicEndpoints) {
-        headers["x-api-key"] = this.projectKey;
-      } else if (this.apiToken) {
-        headers["Authorization"] = `Bearer ${this.apiToken}`;
-      }
-
-      const response = await fetch(url, { headers });
-
-      if (!response.ok) {
-        throw new Error(`Failed to fetch project info: ${response.status}`);
-      }
-
-      const json = await response.json();
-      const project = json.data || json;
-
-      this.supportedLangs = project.supportedLanguages || [];
-      return this.supportedLangs;
-    } catch (error) {
-      console.error("[BhashaJS] Failed to fetch project info:", error);
-      return [];
+    if (this.usePublicEndpoints) {
+      headers["x-api-key"] = this.projectKey;
+    } else if (this.apiToken) {
+      headers["Authorization"] = `Bearer ${this.apiToken}`;
     }
+
+    const response = await fetch(url, { headers });
+
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new Error(
+        `BhashaJS: failed to fetch project info (HTTP ${response.status})${detail ? ": " + detail : ""}`
+      );
+    }
+
+    const json = await response.json();
+    const project = json.data || json;
+
+    this.supportedLangs = project.supportedLanguages || [];
+    return this.supportedLangs;
   }
 
   /**

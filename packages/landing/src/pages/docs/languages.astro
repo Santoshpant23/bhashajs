@@ -1,0 +1,102 @@
+---
+import DocLayout from "../../components/DocLayout.astro";
+
+const langs = [
+  { code: "en", name: "English", native: "English", script: "Latin", dir: "LTR", region: "IN", currency: "INR", chain: "en" },
+  { code: "hi", name: "Hindi", native: "हिन्दी", script: "Devanagari", dir: "LTR", region: "IN", currency: "INR", chain: "hi → en" },
+  { code: "bn", name: "Bengali", native: "বাংলা", script: "Bengali", dir: "LTR", region: "BD", currency: "BDT", chain: "bn → hi → en" },
+  { code: "ur", name: "Urdu", native: "اردو", script: "Nastaliq", dir: "RTL", region: "PK", currency: "PKR", chain: "ur → hi → en" },
+  { code: "ta", name: "Tamil", native: "தமிழ்", script: "Tamil", dir: "LTR", region: "IN", currency: "INR", chain: "ta → en" },
+  { code: "te", name: "Telugu", native: "తెలుగు", script: "Telugu", dir: "LTR", region: "IN", currency: "INR", chain: "te → en" },
+  { code: "mr", name: "Marathi", native: "मराठी", script: "Devanagari", dir: "LTR", region: "IN", currency: "INR", chain: "mr → hi → en" },
+  { code: "ne", name: "Nepali", native: "नेपाली", script: "Devanagari", dir: "LTR", region: "NP", currency: "NPR", chain: "ne → hi → en" },
+  { code: "pa", name: "Punjabi (Gurmukhi)", native: "ਪੰਜਾਬੀ", script: "Gurmukhi", dir: "LTR", region: "IN", currency: "INR", chain: "pa → hi → en" },
+  { code: "pa-PK", name: "Punjabi (Shahmukhi)", native: "پنجابی", script: "Arabic-derived", dir: "RTL", region: "PK", currency: "PKR", chain: "pa-PK → ur → en" },
+  { code: "gu", name: "Gujarati", native: "ગુજરાતી", script: "Gujarati", dir: "LTR", region: "IN", currency: "INR", chain: "gu → hi → en" },
+  { code: "kn", name: "Kannada", native: "ಕನ್ನಡ", script: "Kannada", dir: "LTR", region: "IN", currency: "INR", chain: "kn → en" },
+  { code: "ml", name: "Malayalam", native: "മലയാളം", script: "Malayalam", dir: "LTR", region: "IN", currency: "INR", chain: "ml → en" },
+  { code: "si", name: "Sinhala", native: "සිංහල", script: "Sinhala", dir: "LTR", region: "LK", currency: "LKR", chain: "si → en" },
+];
+---
+
+<DocLayout
+  title="Supported languages"
+  description="bhasha-js supports 14 languages: Hindi, Bengali, Urdu, Tamil, Telugu, Marathi, Nepali, Punjabi (Gurmukhi + Shahmukhi), Gujarati, Kannada, Malayalam, Sinhala, and English. Full list with scripts, regions, currencies, and fallback chains."
+>
+  <h1>Supported languages</h1>
+  <p><strong>14 languages, ~1.8 billion speakers.</strong> Every language has a script-aware Google Font, a default region/currency, an Intl locale string, and a culturally-aware fallback chain pre-configured.</p>
+
+  <h2>The full list</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Code</th>
+        <th>Language</th>
+        <th>Native</th>
+        <th>Script</th>
+        <th>Dir</th>
+        <th>Default region</th>
+        <th>Default currency</th>
+        <th>Fallback chain</th>
+      </tr>
+    </thead>
+    <tbody>
+      {langs.map((l) => (
+        <tr>
+          <td><code>{l.code}</code></td>
+          <td>{l.name}</td>
+          <td>{l.native}</td>
+          <td>{l.script}</td>
+          <td>{l.dir}</td>
+          <td>{l.region}</td>
+          <td>{l.currency}</td>
+          <td><code>{l.chain}</code></td>
+        </tr>
+      ))}
+    </tbody>
+  </table>
+
+  <h2>Fallback chain logic</h2>
+  <p>If a translation key is missing in the active language, bhasha-js walks the chain looking for a match. The chains are linguistically motivated, not alphabetical:</p>
+  <ul>
+    <li><strong>Indo-Aryan languages</strong> (Hindi, Bengali, Marathi, Gujarati, Punjabi, Nepali) fall back through Hindi to English. A Bengali speaker is much more likely to understand Hindi than English.</li>
+    <li><strong>Urdu</strong> shares deep linguistic roots with Hindi — same fallback through Hindi.</li>
+    <li><strong>Punjabi-Shahmukhi</strong> (Pakistan) falls back through Urdu, not Hindi. Different writing system, different cultural context.</li>
+    <li><strong>Dravidian languages</strong> (Tamil, Telugu, Kannada, Malayalam) skip Hindi entirely — they're a different language family. Falling back to a related language doesn't apply.</li>
+    <li><strong>Sinhala</strong> falls back direct to English (no closer relative in the supported set).</li>
+  </ul>
+
+  <h2>Region overrides</h2>
+  <p>Some languages span multiple countries with different currencies. Pass the <code>region</code> prop to <code>&lt;I18nProvider&gt;</code> to override:</p>
+  <table>
+    <thead><tr><th>Language</th><th>Default</th><th>Available regions</th></tr></thead>
+    <tbody>
+      <tr><td>Bengali (bn)</td><td>BD (৳)</td><td>BD (Taka), IN (Rupee)</td></tr>
+      <tr><td>Tamil (ta)</td><td>IN (₹)</td><td>IN (Rupee), LK (Sri Lankan Rupee)</td></tr>
+      <tr><td>Urdu (ur)</td><td>PK (Rs)</td><td>PK (Pakistani Rupee), IN (Rupee)</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Pluralization rules (CLDR)</h2>
+  <p>The 14 languages split into two CLDR plural-rule groups:</p>
+  <ul>
+    <li><strong>Group A — 0 AND 1 are <code>"one"</code> (singular)</strong>: Hindi, Bengali, Marathi, Gujarati, Kannada, Sinhala, Punjabi-Gurmukhi.</li>
+    <li><strong>Group B — only 1 is <code>"one"</code></strong>: English, Urdu, Tamil, Telugu, Malayalam, Nepali, Punjabi-Shahmukhi.</li>
+  </ul>
+  <p>This means <code>t("items_count", &#123; count: 0 &#125;)</code> in Hindi correctly resolves to <code>items_count_one</code>, while in English it resolves to <code>items_count_other</code>.</p>
+
+  <h2>Native digit numbering systems</h2>
+  <p>When you pass <code>useNativeDigits: true</code> to <code>formatNumber</code>, <code>formatCurrency</code>, or <code>formatDate</code>:</p>
+  <ul>
+    <li>Devanagari (Hindi/Marathi/Nepali): <code>०१२३४५६७८९</code></li>
+    <li>Bengali: <code>০১২৩৪৫৬৭৮৯</code></li>
+    <li>Tamil: <code>௦௧௨௩௪௫௬௭௮௯</code></li>
+    <li>Telugu: <code>౦౧౨౩౪౫౬౭౮౯</code></li>
+    <li>Gujarati: <code>૦૧૨૩૪૫૬૭૮૯</code></li>
+    <li>Kannada: <code>೦೧೨೩೪೫೬೭೮೯</code></li>
+    <li>Malayalam: <code>൦൧൨൩൪൫൬൭൮൯</code></li>
+    <li>Gurmukhi: <code>੦੧੨੩੪੫੬੭੮੯</code></li>
+    <li>Sinhala: <code>෦෧෨෩෪෫෬෭෮෯</code></li>
+    <li>Urdu / Arabic: <code>۰۱۲۳۴۵۶۷۸۹</code></li>
+  </ul>
+</DocLayout>

@@ -37,8 +37,9 @@ interface I18nProviderProps extends BhashaConfig {
   children: ReactNode;
 }
 
-// Default API URL — developers override this if they self-host
-const DEFAULT_API_URL = "https://bhashajs.tech/api";
+// Default API URL — points at the hosted BhashaJS service.
+// Override with `apiUrl` prop if you self-host.
+const DEFAULT_API_URL = "https://api.bhashajs.com";
 
 export function I18nProvider({
   projectId = "",

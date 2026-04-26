@@ -1,0 +1,143 @@
+---
+import DocLayout from "../../components/DocLayout.astro";
+---
+
+<DocLayout
+  title="Quickstart"
+  description="Add Hindi, Bengali, Urdu, Tamil and other South Asian language support to your React app in 5 minutes with bhasha-js."
+>
+  <h1>Quickstart</h1>
+  <p>Add bhasha-js to a React app and ship a translated page in 5 minutes. Pick the mode that fits.</p>
+
+  <h2>Prerequisites</h2>
+  <ul>
+    <li>A React 17+ project (Vite, Next.js, Create React App — all work)</li>
+    <li>Node 18+</li>
+  </ul>
+
+  <h2>Step 1 — Install</h2>
+  <pre><code><span class="tok-fn">npm install</span> bhasha-js
+<span class="tok-cmt"># or</span>
+<span class="tok-fn">yarn add</span> bhasha-js
+<span class="tok-cmt"># or</span>
+<span class="tok-fn">pnpm add</span> bhasha-js</code></pre>
+
+  <h2>Step 2 — Pick a mode</h2>
+
+  <h3>Mode 1 · Bundled translations</h3>
+  <p>The fastest path. No backend, no API key.</p>
+
+  <p>Create a few JSON files for your translations:</p>
+  <pre><code><span class="tok-cmt">// src/locales/en.json</span>
+&#123;
+  <span class="tok-key">"hero.title"</span>: <span class="tok-str">"Welcome to our store"</span>,
+  <span class="tok-key">"items_one"</span>: <span class="tok-str">"&#123;count&#125; item"</span>,
+  <span class="tok-key">"items_other"</span>: <span class="tok-str">"&#123;count&#125; items"</span>
+&#125;</code></pre>
+
+  <pre><code><span class="tok-cmt">// src/locales/hi.json</span>
+&#123;
+  <span class="tok-key">"hero.title"</span>: <span class="tok-str">"हमारी दुकान में आपका स्वागत है"</span>,
+  <span class="tok-key">"items_one"</span>: <span class="tok-str">"&#123;count&#125; आइटम"</span>,
+  <span class="tok-key">"items_other"</span>: <span class="tok-str">"&#123;count&#125; आइटम"</span>
+&#125;</code></pre>
+
+  <p>Wrap your app:</p>
+  <pre><code><span class="tok-kw">import</span> &#123; <span class="tok-key">I18nProvider</span>, <span class="tok-key">useTranslation</span>, <span class="tok-key">LanguageSwitcher</span> &#125; <span class="tok-kw">from</span> <span class="tok-str">"bhasha-js"</span>;
+<span class="tok-kw">import</span> en <span class="tok-kw">from</span> <span class="tok-str">"./locales/en.json"</span>;
+<span class="tok-kw">import</span> hi <span class="tok-kw">from</span> <span class="tok-str">"./locales/hi.json"</span>;
+<span class="tok-kw">import</span> ur <span class="tok-kw">from</span> <span class="tok-str">"./locales/ur.json"</span>;
+
+<span class="tok-kw">export default function</span> <span class="tok-fn">App</span>() &#123;
+  <span class="tok-kw">return</span> (
+    &lt;<span class="tok-key">I18nProvider</span>
+      preloadedTranslations=&#123;&#123; en, hi, ur &#125;&#125;
+      defaultLang=<span class="tok-str">"en"</span>&gt;
+      &lt;<span class="tok-key">LanguageSwitcher</span> /&gt;
+      &lt;<span class="tok-key">Page</span> /&gt;
+    &lt;/<span class="tok-key">I18nProvider</span>&gt;
+  );
+&#125;
+
+<span class="tok-kw">function</span> <span class="tok-fn">Page</span>() &#123;
+  <span class="tok-kw">const</span> &#123; t, formatCurrency &#125; = <span class="tok-fn">useTranslation</span>();
+  <span class="tok-kw">return</span> (
+    &lt;&gt;
+      &lt;h1&gt;&#123;<span class="tok-fn">t</span>(<span class="tok-str">"hero.title"</span>)&#125;&lt;/h1&gt;
+      &lt;p&gt;&#123;<span class="tok-fn">t</span>(<span class="tok-str">"items"</span>, &#123; count: <span class="tok-str">5</span> &#125;)&#125;&lt;/p&gt;
+      &lt;p&gt;&#123;<span class="tok-fn">formatCurrency</span>(<span class="tok-str">1234567</span>)&#125;&lt;/p&gt;
+    &lt;/&gt;
+  );
+&#125;</code></pre>
+
+  <p>Done. Run your app, click the language switcher, watch Hindi work end-to-end.</p>
+
+  <h3>Mode 2 · Hosted dashboard</h3>
+  <p>Best for production apps with translators on your team.</p>
+
+  <ol>
+    <li><strong>Sign up</strong> at <a href="https://app.bhashajs.com/register">app.bhashajs.com/register</a>.</li>
+    <li><strong>Create a project</strong>: pick the languages you want to support (e.g. English, Hindi, Bengali, Urdu).</li>
+    <li><strong>Copy your API key</strong> from project settings — it starts with <code>bjs_</code>.</li>
+    <li><strong>Add translation keys</strong> in the dashboard editor, or use the AI Translate button to generate them from English.</li>
+    <li><strong>Wire up the SDK</strong>:</li>
+  </ol>
+
+  <pre><code><span class="tok-kw">import</span> &#123; <span class="tok-key">I18nProvider</span>, <span class="tok-key">useTranslation</span> &#125; <span class="tok-kw">from</span> <span class="tok-str">"bhasha-js"</span>;
+
+&lt;<span class="tok-key">I18nProvider</span>
+  projectKey=<span class="tok-str">"bjs_your_api_key_here"</span>
+  defaultLang=<span class="tok-str">"en"</span>&gt;
+  &lt;<span class="tok-key">YourApp</span> /&gt;
+&lt;/<span class="tok-key">I18nProvider</span>&gt;</code></pre>
+
+  <p>The SDK fetches translations from <code>https://api.bhashajs.com</code> using the <code>x-api-key</code> header. Cached in memory after first load — language switching is instant.</p>
+
+  <h3>Mode 3 · Self-hosted</h3>
+  <p>See <a href="/docs/self-hosting/">Self-hosting guide</a>.</p>
+
+  <h2>Step 3 — Add a language switcher</h2>
+  <pre><code>&lt;<span class="tok-key">LanguageSwitcher</span> /&gt;                              <span class="tok-cmt">// dropdown</span>
+&lt;<span class="tok-key">LanguageSwitcher</span> style=<span class="tok-str">"floating"</span> position=<span class="tok-str">"top-right"</span> /&gt;</code></pre>
+
+  <p>Or build your own:</p>
+  <pre><code><span class="tok-kw">function</span> <span class="tok-fn">MySwitcher</span>() &#123;
+  <span class="tok-kw">const</span> &#123; currentLang, setLang, supportedLangs &#125; = <span class="tok-fn">useTranslation</span>();
+  <span class="tok-kw">return</span> (
+    &lt;select value=&#123;currentLang&#125; onChange=&#123;(e) =&gt; <span class="tok-fn">setLang</span>(e.target.value)&#125;&gt;
+      &#123;supportedLangs.<span class="tok-fn">map</span>((l) =&gt; &lt;option key=&#123;l&#125; value=&#123;l&#125;&gt;&#123;l&#125;&lt;/option&gt;)&#125;
+    &lt;/select&gt;
+  );
+&#125;</code></pre>
+
+  <h2>Step 4 — Format numbers + currency</h2>
+  <pre><code><span class="tok-kw">const</span> &#123; formatNumber, formatCurrency, formatDate &#125; = <span class="tok-fn">useTranslation</span>();
+
+<span class="tok-fn">formatNumber</span>(<span class="tok-str">1234567</span>);                           <span class="tok-cmt">// → "12,34,567" in Hindi</span>
+<span class="tok-fn">formatNumber</span>(<span class="tok-str">1500000</span>, &#123; compact: <span class="tok-str">true</span> &#125;);         <span class="tok-cmt">// → "15 लाख"</span>
+<span class="tok-fn">formatNumber</span>(<span class="tok-str">123</span>, &#123; useNativeDigits: <span class="tok-str">true</span> &#125;);    <span class="tok-cmt">// → "१२३"</span>
+
+<span class="tok-fn">formatCurrency</span>(<span class="tok-str">1234567</span>);                         <span class="tok-cmt">// → "₹12,34,567.00" in Hindi</span>
+<span class="tok-fn">formatCurrency</span>(<span class="tok-str">1500</span>, &#123; currency: <span class="tok-str">"USD"</span> &#125;);       <span class="tok-cmt">// → "$1,500.00"</span>
+
+<span class="tok-fn">formatDate</span>(<span class="tok-kw">new</span> Date());                            <span class="tok-cmt">// → "26 Apr 2026"</span>
+<span class="tok-fn">formatDate</span>(<span class="tok-kw">new</span> Date(), &#123; preset: <span class="tok-str">"long"</span> &#125;);         <span class="tok-cmt">// → "26 अप्रैल 2026"</span></code></pre>
+
+  <h2>Step 5 — Pluralization</h2>
+  <p>Suffix your keys with <code>_one</code> and <code>_other</code>. The SDK picks the right one based on the language's CLDR rules.</p>
+  <pre><code><span class="tok-cmt">// In your translations:</span>
+&#123;
+  <span class="tok-key">"items_count_one"</span>: <span class="tok-str">"&#123;count&#125; आइटम"</span>,
+  <span class="tok-key">"items_count_other"</span>: <span class="tok-str">"&#123;count&#125; आइटम"</span>
+&#125;
+
+<span class="tok-cmt">// In your component:</span>
+<span class="tok-fn">t</span>(<span class="tok-str">"items_count"</span>, &#123; count: <span class="tok-str">0</span> &#125;)   <span class="tok-cmt">// Hindi → uses _one (0 is singular!)</span>
+<span class="tok-fn">t</span>(<span class="tok-str">"items_count"</span>, &#123; count: <span class="tok-str">0</span> &#125;)   <span class="tok-cmt">// English → uses _other (0 is plural)</span></code></pre>
+
+  <h2>Next steps</h2>
+  <ul>
+    <li><a href="/docs/api/">Full API reference</a></li>
+    <li><a href="/docs/languages/">Supported languages and their settings</a></li>
+  </ul>
+</DocLayout>

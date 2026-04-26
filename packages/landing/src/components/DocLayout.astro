@@ -1,0 +1,62 @@
+---
+import Layout from "../layouts/Layout.astro";
+import Nav from "./Nav.astro";
+import Footer from "./Footer.astro";
+
+export interface Props {
+  title: string;
+  description: string;
+}
+
+const { title, description } = Astro.props;
+const fullTitle = `${title} — bhasha-js docs`;
+
+const sections = [
+  { href: "/docs/", label: "Overview" },
+  { href: "/docs/quickstart/", label: "Quickstart" },
+  { href: "/docs/api/", label: "API reference" },
+  { href: "/docs/languages/", label: "Supported languages" },
+  { href: "/docs/self-hosting/", label: "Self-hosting" },
+];
+
+const current = Astro.url.pathname.replace(/\/+$/, "/");
+---
+
+<Layout title={fullTitle} description={description}>
+  <Nav />
+  <div class="container" style="padding-top: 3rem; padding-bottom: 4rem;">
+    <div style="display: grid; grid-template-columns: 220px 1fr; gap: 3rem;" class="docs-grid">
+      <aside style="position: sticky; top: 5rem; align-self: start;" class="docs-sidebar">
+        <div style="font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.75rem;">Docs</div>
+        <ul style="list-style: none; padding: 0;">
+          {sections.map((s) => (
+            <li style="margin-bottom: 0.4rem;">
+              <a
+                href={s.href}
+                style={`display: block; padding: 0.4rem 0.75rem; border-radius: 6px; color: ${current === s.href.replace(/\/+$/, "/") ? "var(--text)" : "var(--text-dim)"}; background: ${current === s.href.replace(/\/+$/, "/") ? "var(--bg-elev)" : "transparent"}; font-weight: ${current === s.href.replace(/\/+$/, "/") ? "600" : "400"};`}
+              >{s.label}</a>
+            </li>
+          ))}
+        </ul>
+      </aside>
+      <main class="prose">
+        <slot />
+      </main>
+    </div>
+  </div>
+  <Footer />
+</Layout>
+
+<style>
+  @media (max-width: 800px) {
+    .docs-grid {
+      grid-template-columns: 1fr !important;
+    }
+    .docs-sidebar {
+      position: relative !important;
+      top: 0 !important;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 1.5rem;
+    }
+  }
+</style>

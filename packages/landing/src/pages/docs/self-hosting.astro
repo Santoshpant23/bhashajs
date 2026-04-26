@@ -1,0 +1,71 @@
+---
+import DocLayout from "../../components/DocLayout.astro";
+---
+
+<DocLayout
+  title="Self-hosting"
+  description="Run the entire bhasha-js stack — backend API, dashboard, MongoDB — on your own infrastructure with Docker."
+>
+  <h1>Self-hosting bhasha-js</h1>
+  <p>The whole BhashaJS stack — backend API, management dashboard, MongoDB — is open source and ships with a <code>docker-compose.yml</code>. You can run it on any server with Docker installed.</p>
+
+  <h2>What you'll need</h2>
+  <ul>
+    <li>A VPS with Docker + Docker Compose installed (any cheap droplet: Hetzner, DigitalOcean, Linode work).</li>
+    <li>A domain name pointing at the server's IP.</li>
+    <li>A Google Gemini API key (for AI translation features). <a href="https://aistudio.google.com/apikey">Get one free here</a>.</li>
+  </ul>
+
+  <h2>1. Clone the repo</h2>
+  <pre><code><span class="tok-fn">git clone</span> https://github.com/santoshpant613/bhashajs.git
+<span class="tok-fn">cd</span> bhashajs</code></pre>
+
+  <h2>2. Configure environment</h2>
+  <pre><code><span class="tok-fn">cp</span> .env.example .env
+<span class="tok-fn">nano</span> .env</code></pre>
+
+  <p>Fill in the required values:</p>
+  <ul>
+    <li><code>JWT_SECRET</code> — generate with <code>openssl rand -hex 32</code></li>
+    <li><code>GEMINI_API_KEY</code> — your Gemini API key</li>
+    <li><code>MONGO_ROOT_PASSWORD</code> — strong random password (used by the bundled MongoDB)</li>
+    <li><code>CORS_ORIGIN</code> — comma-separated list of frontend origins, e.g. <code>https://bhashajs.com,https://app.bhashajs.com</code></li>
+  </ul>
+
+  <h2>3. Deploy</h2>
+  <pre><code><span class="tok-fn">chmod +x</span> deploy.sh
+./deploy.sh you@email.com</code></pre>
+  <p>This sets up Caddy + Let's Encrypt for HTTPS, brings up the stack, and runs the database migration. Takes about 60 seconds.</p>
+
+  <h2>4. Verify</h2>
+  <ul>
+    <li><code>https://your-domain.com/api/health</code> returns <code>&#123;"success": true&#125;</code></li>
+    <li><code>https://your-domain.com</code> shows the dashboard. Register an account.</li>
+  </ul>
+
+  <h2>5. Point the SDK at your URL</h2>
+  <pre><code>&lt;<span class="tok-key">I18nProvider</span>
+  projectKey=<span class="tok-str">"bjs_..."</span>
+  apiUrl=<span class="tok-str">"https://your-domain.com/api"</span>
+  defaultLang=<span class="tok-str">"en"</span>&gt;
+  &lt;<span class="tok-key">App</span> /&gt;
+&lt;/<span class="tok-key">I18nProvider</span>&gt;</code></pre>
+
+  <h2>What's running</h2>
+  <ul>
+    <li><strong>Backend API</strong> (Express + MongoDB) — at <code>:5000</code> behind nginx</li>
+    <li><strong>Dashboard</strong> (React + Vite SPA) — static files served by nginx</li>
+    <li><strong>MongoDB 7</strong> — local container with persistent volume</li>
+    <li><strong>nginx</strong> — TLS termination, reverse proxy</li>
+  </ul>
+
+  <h2>Backups</h2>
+  <p>The MongoDB volume is mounted at <code>./mongo_data</code>. Back it up with <code>tar</code> or <code>mongodump</code>:</p>
+  <pre><code><span class="tok-fn">docker compose exec</span> mongo mongodump --archive=/data/db/backup.archive
+<span class="tok-fn">docker cp</span> bhashajs-mongo-1:/data/db/backup.archive ./backups/</code></pre>
+
+  <h2>Updates</h2>
+  <pre><code><span class="tok-fn">git pull</span>
+<span class="tok-fn">docker compose down</span>
+<span class="tok-fn">docker compose up</span> --build -d</code></pre>
+</DocLayout>

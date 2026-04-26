@@ -1,0 +1,261 @@
+---
+export interface Props {
+  title: string;
+  description: string;
+  ogImage?: string;
+  canonical?: string;
+}
+
+const {
+  title,
+  description,
+  ogImage = "/og-image.png",
+  canonical,
+} = Astro.props;
+
+const canonicalURL = canonical || new URL(Astro.url.pathname, Astro.site).toString();
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonicalURL} />
+
+    <!-- Theme -->
+    <meta name="theme-color" content="#FF6B2C" />
+    <meta name="color-scheme" content="dark light" />
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content={canonicalURL} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:image" content={new URL(ogImage, Astro.site).toString()} />
+    <meta property="og:site_name" content="bhasha-js" />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:url" content={canonicalURL} />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={new URL(ogImage, Astro.site).toString()} />
+
+    <!-- Structured data — SoftwareApplication / SoftwareSourceCode -->
+    <script type="application/ld+json" set:html={JSON.stringify({
+      "@context": "https://schema.org",
+      "@type": "SoftwareSourceCode",
+      "name": "bhasha-js",
+      "description": "React i18n for South Asian languages — Hindi, Bengali, Urdu, Tamil, Telugu, Marathi, Punjabi, Gujarati, Kannada, Malayalam, Nepali, Sinhala — with auto RTL, lakh/crore numbers, native digits, and CLDR plurals.",
+      "codeRepository": "https://github.com/santoshpant613/bhashajs",
+      "programmingLanguage": ["TypeScript", "JavaScript"],
+      "license": "https://opensource.org/licenses/MIT",
+      "author": {
+        "@type": "Person",
+        "name": "Santosh Pant"
+      },
+      "url": "https://bhashajs.com"
+    })} />
+
+    <!-- Fonts: load Devanagari / Bengali / Nastaliq / Tamil for the demo -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&family=Noto+Sans+Devanagari:wght@400;600;700&family=Noto+Sans+Bengali:wght@400;600&family=Noto+Sans+Tamil:wght@400;600&family=Noto+Nastaliq+Urdu:wght@400;600&display=swap" rel="stylesheet" />
+
+    <slot name="head" />
+  </head>
+  <body>
+    <slot />
+  </body>
+</html>
+
+<style is:global>
+  :root {
+    --bg: #0E1116;
+    --bg-elev: #161B22;
+    --bg-card: #1C232E;
+    --border: #2A3340;
+    --text: #E6EDF3;
+    --text-dim: #9BA8B7;
+    --text-muted: #6B7785;
+    --brand: #FF6B2C;
+    --brand-dim: #C75319;
+    --brand-light: #FFA275;
+    --code-bg: #0B0E13;
+    --success: #56D364;
+    --max: 1100px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html {
+    scroll-behavior: smooth;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    font-family: "Inter", system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  a { color: var(--brand-light); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  code, pre, .mono {
+    font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+
+  .container {
+    max-width: var(--max);
+    margin: 0 auto;
+    padding: 0 1.5rem;
+  }
+
+  h1, h2, h3, h4 {
+    line-height: 1.2;
+    color: var(--text);
+    font-weight: 700;
+  }
+
+  h1 { font-size: clamp(2.2rem, 5vw, 3.8rem); letter-spacing: -0.02em; }
+  h2 { font-size: clamp(1.6rem, 3vw, 2.4rem); letter-spacing: -0.01em; }
+  h3 { font-size: 1.25rem; }
+
+  p { color: var(--text-dim); }
+
+  /* Nav */
+  .nav {
+    position: sticky; top: 0; z-index: 100;
+    backdrop-filter: blur(12px);
+    background: rgba(14, 17, 22, 0.75);
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-inner {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 1rem 1.5rem;
+    max-width: var(--max);
+    margin: 0 auto;
+  }
+  .logo {
+    display: flex; align-items: center; gap: 0.5rem;
+    font-weight: 700; font-size: 1.1rem;
+    color: var(--text);
+  }
+  .logo span:first-child {
+    font-family: "Noto Sans Devanagari", sans-serif;
+    color: var(--brand);
+    font-size: 1.4rem;
+  }
+  .nav-links { display: flex; gap: 1.5rem; align-items: center; }
+  .nav-links a { color: var(--text-dim); font-size: 0.95rem; }
+  .nav-links a:hover { color: var(--text); text-decoration: none; }
+
+  .btn {
+    display: inline-block;
+    padding: 0.6rem 1.1rem;
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 0.95rem;
+    transition: all 0.15s;
+    border: 1px solid transparent;
+    cursor: pointer;
+  }
+  .btn-primary {
+    background: var(--brand);
+    color: #fff;
+  }
+  .btn-primary:hover { background: var(--brand-dim); text-decoration: none; }
+  .btn-secondary {
+    background: transparent;
+    color: var(--text);
+    border-color: var(--border);
+  }
+  .btn-secondary:hover { background: var(--bg-elev); text-decoration: none; }
+
+  /* Cards */
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.5rem;
+  }
+
+  /* Code blocks */
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.25rem 1.5rem;
+    overflow-x: auto;
+    font-size: 0.875rem;
+    line-height: 1.6;
+    color: #E6EDF3;
+  }
+  code:not(pre code) {
+    background: var(--bg-elev);
+    color: var(--brand-light);
+    padding: 0.15rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.85em;
+  }
+  .tok-key { color: #79C0FF; }
+  .tok-str { color: #A5D6A2; }
+  .tok-cmt { color: #6B7785; font-style: italic; }
+  .tok-fn  { color: #FFA275; }
+  .tok-kw  { color: #FF7B72; }
+
+  /* Tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.95rem;
+  }
+  th, td {
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+  }
+  th { font-weight: 600; color: var(--text); background: var(--bg-elev); }
+  td { color: var(--text-dim); }
+
+  /* Sections */
+  section { padding: 4.5rem 0; }
+  .section-head { text-align: center; margin-bottom: 3rem; }
+  .section-head p { max-width: 640px; margin: 0.75rem auto 0; }
+
+  /* Footer */
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 3rem 0 2rem;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+  }
+  footer a { color: var(--text-dim); }
+
+  /* Doc-page typography */
+  .prose h1 { margin-bottom: 1rem; }
+  .prose h2 { margin: 2.5rem 0 1rem; }
+  .prose h3 { margin: 2rem 0 0.75rem; }
+  .prose p, .prose ul, .prose ol, .prose pre, .prose table {
+    margin-bottom: 1.25rem;
+  }
+  .prose ul, .prose ol { padding-left: 1.5rem; }
+  .prose li { margin-bottom: 0.4rem; color: var(--text-dim); }
+  .prose strong { color: var(--text); }
+
+  @media (max-width: 700px) {
+    .nav-links a:not(.btn) { display: none; }
+    section { padding: 3rem 0; }
+  }
+</style>

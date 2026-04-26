@@ -9,8 +9,13 @@
 
 import axios from "axios";
 
+// In dev, Vite proxies /api → localhost:5000. In production, the dashboard
+// (app.bhashajs.com) and the API (api.bhashajs.com) are on different hosts,
+// so we read the API URL from VITE_API_URL at build time.
+const baseURL = import.meta.env.VITE_API_URL || "/api";
+
 const api = axios.create({
-  baseURL: "/api",
+  baseURL,
 });
 
 // Attach token before every request

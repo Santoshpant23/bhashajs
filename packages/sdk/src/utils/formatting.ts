@@ -47,10 +47,14 @@ export function formatNumber(
   const langInfo = getLangInfo(lang);
   const { intlLocale } = resolveRegion(lang, region);
 
-  // Build the locale string with optional numbering system
+  // Build the locale string. Force Latin digits unless the caller explicitly
+  // opts in via useNativeDigits — otherwise some locales (bn-BD, ta-IN) silently
+  // emit native digits even when the developer passed nothing about digits.
   let locale = intlLocale;
   if (options?.useNativeDigits && langInfo.numberingSystem !== "latn") {
     locale = `${intlLocale}-u-nu-${langInfo.numberingSystem}`;
+  } else {
+    locale = `${intlLocale}-u-nu-latn`;
   }
 
   const intlOptions: Intl.NumberFormatOptions = {};
@@ -98,10 +102,12 @@ export function formatCurrency(
   // Use explicit currency or auto-detect from language + region
   const currencyCode = options?.currency || resolved.currency;
 
-  // Build locale with optional native digits
+  // Build locale with optional native digits (default to latn for consistency).
   let locale = resolved.intlLocale;
   if (options?.useNativeDigits && langInfo.numberingSystem !== "latn") {
     locale = `${resolved.intlLocale}-u-nu-${langInfo.numberingSystem}`;
+  } else {
+    locale = `${resolved.intlLocale}-u-nu-latn`;
   }
 
   const intlOptions: Intl.NumberFormatOptions = {
@@ -147,10 +153,12 @@ export function formatDate(
   // Normalize the date input
   const dateObj = date instanceof Date ? date : new Date(date);
 
-  // Build locale with optional native digits
+  // Build locale with optional native digits (default to latn for consistency).
   let locale = intlLocale;
   if (options?.useNativeDigits && langInfo.numberingSystem !== "latn") {
     locale = `${intlLocale}-u-nu-${langInfo.numberingSystem}`;
+  } else {
+    locale = `${intlLocale}-u-nu-latn`;
   }
 
   // Map presets to Intl.DateTimeFormat options

@@ -1,0 +1,122 @@
+---
+import DocLayout from "../../components/DocLayout.astro";
+---
+
+<DocLayout
+  title="API reference"
+  description="Complete API reference for bhasha-js — I18nProvider, useTranslation, useLangInfo, LanguageSwitcher, Trans, formatNumber, formatCurrency, formatDate, getPluralCategory."
+>
+  <h1>API reference</h1>
+
+  <h2><code>&lt;I18nProvider&gt;</code></h2>
+  <p>Top-level provider. Wrap your app once.</p>
+  <table>
+    <thead><tr><th>Prop</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>projectKey</code></td><td><code>string</code></td><td>—</td><td>Project API key (starts with <code>bjs_</code>). Mode 2/3.</td></tr>
+      <tr><td><code>projectId</code></td><td><code>string</code></td><td>—</td><td>For JWT auth (advanced).</td></tr>
+      <tr><td><code>apiToken</code></td><td><code>string</code></td><td>—</td><td>JWT for advanced auth.</td></tr>
+      <tr><td><code>preloadedTranslations</code></td><td><code>Record&lt;string, Record&lt;string, string&gt;&gt;</code></td><td>—</td><td>Bundle translations into your app (Mode 1).</td></tr>
+      <tr><td><code>defaultLang</code></td><td><code>string</code></td><td><code>"en"</code></td><td>Initial language code.</td></tr>
+      <tr><td><code>apiUrl</code></td><td><code>string</code></td><td><code>"https://api.bhashajs.com"</code></td><td>API base URL (override for self-hosting).</td></tr>
+      <tr><td><code>region</code></td><td><code>string</code></td><td>—</td><td>Region override: <code>"IN"</code>, <code>"BD"</code>, <code>"PK"</code>, <code>"LK"</code>, <code>"NP"</code>. Affects currency + Intl locale.</td></tr>
+      <tr><td><code>onLanguageChange</code></td><td><code>(lang: string) =&gt; void</code></td><td>—</td><td>Callback whenever language changes.</td></tr>
+    </tbody>
+  </table>
+
+  <h2><code>useTranslation()</code></h2>
+  <pre><code><span class="tok-kw">const</span> &#123;
+  t,                  <span class="tok-cmt">// (key, params?) =&gt; string</span>
+  currentLang,        <span class="tok-cmt">// "hi"</span>
+  setLang,            <span class="tok-cmt">// (lang: string) =&gt; void</span>
+  supportedLangs,     <span class="tok-cmt">// string[]</span>
+  isLoading,          <span class="tok-cmt">// boolean</span>
+  error,              <span class="tok-cmt">// string | null — surfaces auth/network errors</span>
+  formatNumber,       <span class="tok-cmt">// (value, options?) =&gt; string</span>
+  formatCurrency,     <span class="tok-cmt">// (value, options?) =&gt; string</span>
+  formatDate,         <span class="tok-cmt">// (date, options?) =&gt; string</span>
+&#125; = <span class="tok-fn">useTranslation</span>();</code></pre>
+
+  <h3><code>t(key, params?)</code></h3>
+  <p>The translation function. Returns the translated string for the current language with fallback chain support.</p>
+  <pre><code><span class="tok-fn">t</span>(<span class="tok-str">"hero.title"</span>);                              <span class="tok-cmt">// simple lookup</span>
+<span class="tok-fn">t</span>(<span class="tok-str">"greeting"</span>, &#123; name: <span class="tok-str">"Rohan"</span> &#125;);              <span class="tok-cmt">// interpolation</span>
+<span class="tok-fn">t</span>(<span class="tok-str">"items"</span>, &#123; count: <span class="tok-str">5</span> &#125;);                       <span class="tok-cmt">// pluralization (uses items_one / items_other)</span></code></pre>
+
+  <h3><code>setLang(lang)</code></h3>
+  <p>Switch the active language. Triggers font load + RTL switch + re-render.</p>
+
+  <h2><code>useLangInfo()</code></h2>
+  <pre><code><span class="tok-kw">const</span> &#123;
+  code,            <span class="tok-cmt">// "hi"</span>
+  name,            <span class="tok-cmt">// "हिन्दी"</span>
+  englishName,     <span class="tok-cmt">// "Hindi"</span>
+  dir,             <span class="tok-cmt">// "ltr" | "rtl"</span>
+  font,            <span class="tok-cmt">// "Noto Sans Devanagari, sans-serif"</span>
+  script,          <span class="tok-cmt">// "Devanagari"</span>
+  defaultRegion,   <span class="tok-cmt">// "IN"</span>
+  intlLocale,      <span class="tok-cmt">// "hi-IN"</span>
+  defaultCurrency, <span class="tok-cmt">// "INR"</span>
+&#125; = <span class="tok-fn">useLangInfo</span>();</code></pre>
+
+  <h2><code>&lt;LanguageSwitcher /&gt;</code></h2>
+  <table>
+    <thead><tr><th>Prop</th><th>Type</th><th>Default</th></tr></thead>
+    <tbody>
+      <tr><td><code>style</code></td><td><code>"dropdown" | "floating"</code></td><td><code>"dropdown"</code></td></tr>
+      <tr><td><code>position</code></td><td><code>"top-right" | "top-left" | "bottom-right" | "bottom-left"</code></td><td><code>"top-right"</code></td></tr>
+      <tr><td><code>className</code></td><td><code>string</code></td><td>—</td></tr>
+    </tbody>
+  </table>
+
+  <h2><code>&lt;Trans /&gt;</code></h2>
+  <p>Component-based translation, useful when wrapping rendered output.</p>
+  <pre><code>&lt;<span class="tok-key">Trans</span> id=<span class="tok-str">"hero.title"</span> /&gt;
+&lt;<span class="tok-key">Trans</span> id=<span class="tok-str">"greeting"</span> params=&#123;&#123; name: <span class="tok-str">"Rohan"</span> &#125;&#125; as=<span class="tok-str">"h1"</span> /&gt;</code></pre>
+
+  <h2>Standalone utilities</h2>
+  <p>These don't need React. Import directly.</p>
+
+  <h3><code>formatNumber(value, lang, region?, options?)</code></h3>
+  <table>
+    <thead><tr><th>Option</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>useNativeDigits</code></td><td><code>boolean</code></td><td>Render digits in the native script (१२३ instead of 123).</td></tr>
+      <tr><td><code>compact</code></td><td><code>boolean</code></td><td>Compact notation (1.5 लाख, 2 करोड़).</td></tr>
+    </tbody>
+  </table>
+
+  <h3><code>formatCurrency(value, lang, region?, options?)</code></h3>
+  <table>
+    <thead><tr><th>Option</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>currency</code></td><td><code>string</code></td><td>Override the auto-detected currency (e.g. <code>"USD"</code>, <code>"EUR"</code>).</td></tr>
+      <tr><td><code>display</code></td><td><code>"symbol" | "code" | "name"</code></td><td>How to render the currency.</td></tr>
+      <tr><td><code>useNativeDigits</code></td><td><code>boolean</code></td><td>Render digits in the native script.</td></tr>
+    </tbody>
+  </table>
+
+  <h3><code>formatDate(date, lang, region?, options?)</code></h3>
+  <table>
+    <thead><tr><th>Option</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>preset</code></td><td><code>"short" | "medium" | "long" | "full"</code></td><td>Default <code>"medium"</code>.</td></tr>
+      <tr><td><code>useNativeDigits</code></td><td><code>boolean</code></td><td>Render digits in the native script.</td></tr>
+    </tbody>
+  </table>
+
+  <h3><code>getPluralCategory(count, lang)</code></h3>
+  <p>Returns <code>"one"</code> or <code>"other"</code> based on the language's CLDR plural rules.</p>
+  <pre><code><span class="tok-fn">getPluralCategory</span>(<span class="tok-str">0</span>, <span class="tok-str">"hi"</span>);   <span class="tok-cmt">// "one"   (Hindi: 0 is singular)</span>
+<span class="tok-fn">getPluralCategory</span>(<span class="tok-str">0</span>, <span class="tok-str">"en"</span>);   <span class="tok-cmt">// "other" (English: 0 is plural)</span>
+<span class="tok-fn">getPluralCategory</span>(<span class="tok-str">1</span>, <span class="tok-str">"ta"</span>);   <span class="tok-cmt">// "one"</span></code></pre>
+
+  <h3><code>getFallbackChain(lang)</code></h3>
+  <p>Returns the culturally-aware fallback chain for the language.</p>
+  <pre><code><span class="tok-fn">getFallbackChain</span>(<span class="tok-str">"bn"</span>);   <span class="tok-cmt">// ["bn", "hi", "en"]</span>
+<span class="tok-fn">getFallbackChain</span>(<span class="tok-str">"ta"</span>);   <span class="tok-cmt">// ["ta", "en"] (Dravidian — skips Hindi)</span>
+<span class="tok-fn">getFallbackChain</span>(<span class="tok-str">"pa-PK"</span>);<span class="tok-cmt">// ["pa-PK", "ur", "en"]</span></code></pre>
+
+  <h3><code>getLangInfo(lang)</code>, <code>LANGUAGES</code>, <code>REGION_OVERRIDES</code></h3>
+  <p>Read-only access to the language metadata database.</p>
+</DocLayout>

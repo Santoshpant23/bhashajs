@@ -1,0 +1,43 @@
+---
+const year = new Date().getFullYear();
+---
+
+<footer>
+  <div class="container">
+    <div style="display: flex; justify-content: space-between; flex-wrap: wrap; gap: 2rem; margin-bottom: 2rem;">
+      <div>
+        <div class="logo" style="margin-bottom: 0.75rem;">
+          <span style="font-family: 'Noto Sans Devanagari', sans-serif; color: var(--brand); font-size: 1.4rem;">भा</span>
+          <span style="font-weight: 700; color: var(--text);">bhasha-js</span>
+        </div>
+        <p style="max-width: 360px; font-size: 0.9rem;">
+          React i18n for the 1.8 billion South Asians who deserve software in their language, formatted correctly.
+        </p>
+      </div>
+      <div style="display: flex; gap: 3rem; flex-wrap: wrap;">
+        <div>
+          <h4 style="font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 0.75rem;">Product</h4>
+          <ul style="list-style: none; padding: 0;">
+            <li style="margin-bottom: 0.4rem;"><a href="/docs/">Get started</a></li>
+            <li style="margin-bottom: 0.4rem;"><a href="/docs/quickstart/">Quickstart</a></li>
+            <li style="margin-bottom: 0.4rem;"><a href="/docs/api/">API reference</a></li>
+            <li style="margin-bottom: 0.4rem;"><a href="https://app.bhashajs.com">Dashboard</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4 style="font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 0.75rem;">Project</h4>
+          <ul style="list-style: none; padding: 0;">
+            <li style="margin-bottom: 0.4rem;"><a href="https://www.npmjs.com/package/bhasha-js">npm</a></li>
+            <li style="margin-bottom: 0.4rem;"><a href="https://github.com/santoshpant613/bhashajs">GitHub</a></li>
+            <li style="margin-bottom: 0.4rem;"><a href="/docs/self-hosting/">Self-hosting</a></li>
+            <li style="margin-bottom: 0.4rem;"><a href="/docs/languages/">Supported languages</a></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    <div style="border-top: 1px solid var(--border); padding-top: 1.5rem; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 1rem;">
+      <span>© {year} bhasha-js · MIT License</span>
+      <span>Made for हिन्दी, বাংলা, اردو, தமிழ், తెలుగు · and more</span>
+    </div>
+  </div>
+</footer>
