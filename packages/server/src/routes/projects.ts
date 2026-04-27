@@ -48,14 +48,19 @@ router.get("/", async (req: AuthRequest, res: Response) => {
       createdAt: -1,
     });
 
-    // Merge role info so the dashboard knows what to show
+    // Merge role info so the dashboard knows what to show.
+    // Strip apiKey for non-owners — translators/viewers should never see the
+    // project's secret SDK key, even though the UI already hides it.
     const roleMap = new Map(
       memberships.map((m) => [m.projectId.toString(), m.role])
     );
-    const enriched = projects.map((p) => ({
-      ...p.toObject(),
-      myRole: roleMap.get(p._id.toString()),
-    }));
+    const enriched = projects.map((p) => {
+      const obj: any = p.toObject();
+      const role = roleMap.get(p._id.toString());
+      if (role !== "owner") delete obj.apiKey;
+      obj.myRole = role;
+      return obj;
+    });
 
     return sendSuccess(res, 200, enriched);
   } catch (e) {
@@ -118,10 +123,10 @@ router.get(
       const project = await Project.findById(id);
       if (!project) return sendError(res, 404, "Project not found");
 
-      return sendSuccess(res, 200, {
-        ...project.toObject(),
-        myRole: req.membership?.role,
-      });
+      const obj: any = project.toObject();
+      if (req.membership?.role !== "owner") delete obj.apiKey;
+      obj.myRole = req.membership?.role;
+      return sendSuccess(res, 200, obj);
     } catch (e) {
       return sendError(res, 500, "Failed to fetch project");
     }

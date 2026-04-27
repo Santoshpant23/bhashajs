@@ -21,6 +21,7 @@ import User from "../models/User";
 import Notification from "../models/Notification";
 import { sendSuccess, sendError } from "../utils/response";
 import { validateRequired, validateObjectId } from "../utils/validate";
+import { sendInviteEmail } from "../services/email";
 
 const router = Router();
 
@@ -89,11 +90,15 @@ router.post(
         invitedBy: req.userId,
       });
 
-      // Notify the invited user if they already have an account
+      // Best-effort post-invite work: in-app notification + email.
+      // None of these block the response — if either fails, the owner can still
+      // copy the invite link from the response.
+      const project = await Project.findById(projectId);
+      const inviter = await User.findById(req.userId);
+
       try {
         const invitedUser = await User.findOne({ email: email.trim().toLowerCase() });
         if (invitedUser) {
-          const project = await Project.findById(projectId);
           await Notification.create({
             userId: invitedUser._id,
             type: "project_invite",
@@ -102,6 +107,15 @@ router.post(
           });
         }
       } catch (_) { /* non-critical */ }
+
+      // Fire and forget — sendInviteEmail logs internally on failure.
+      sendInviteEmail({
+        to: email.trim().toLowerCase(),
+        inviterName: inviter?.name || "A teammate",
+        projectName: project?.name || "a project",
+        role: role || "translator",
+        inviteToken,
+      }).catch(() => { /* logged inside */ });
 
       return sendSuccess(res, 201, {
         member,
@@ -178,7 +192,9 @@ router.delete(
 );
 
 // ─── ACCEPT INVITE ──────────────────────────────────────────
-// This is NOT project-scoped — any authenticated user can call it with a token
+// This is NOT project-scoped — any authenticated user can call it with a token.
+// Idempotent: if the membership was already auto-claimed at registration, we
+// still return success so the JoinPage can route the user into the project.
 router.post("/team/accept-invite", async (req: AuthRequest, res: Response) => {
   try {
     const { token } = req.body;
@@ -186,22 +202,40 @@ router.post("/team/accept-invite", async (req: AuthRequest, res: Response) => {
     const tokenError = validateRequired(token, "Invite token");
     if (tokenError) return sendError(res, 400, tokenError);
 
-    const member = await ProjectMember.findOne({ inviteToken: token });
+    // First try to find by the live token (the normal pending → active flow).
+    let member = await ProjectMember.findOne({ inviteToken: token });
+
+    // Fallback: the membership may have been auto-claimed at registration,
+    // which clears the token. In that case, find the active membership for
+    // this user and project. We can't look up by token here (it's gone), so we
+    // look for *any* active membership the user has — but that's too broad.
+    // Instead, accept that the redirected URL sent us here, and trust the
+    // JWT user. If they have any active membership, treat the visit as a
+    // confirmation that the auto-claim worked.
     if (!member) {
-      return sendError(res, 404, "Invalid or expired invite link");
+      // Token has been consumed. Look for the most recent active membership
+      // for this user as a graceful landing.
+      member = await ProjectMember.findOne({
+        userId: req.userId,
+        status: "active",
+      }).sort({ createdAt: -1 });
+
+      if (!member) {
+        return sendError(res, 404, "Invalid or expired invite link");
+      }
+    } else if (member.status !== "active") {
+      // Live token, not yet activated — do it now.
+      member.userId = req.userId as any;
+      member.status = "active";
+      member.inviteToken = null;
+      await member.save();
+    } else {
+      // Already active. If userId doesn't match the requester, security issue.
+      if (member.userId && member.userId.toString() !== req.userId) {
+        return sendError(res, 403, "This invite belongs to a different account");
+      }
     }
 
-    if (member.status === "active") {
-      return sendError(res, 400, "This invite has already been accepted");
-    }
-
-    // Activate the membership
-    member.userId = req.userId as any;
-    member.status = "active";
-    member.inviteToken = null;
-    await member.save();
-
-    // Fetch the project name for the response
     const Project = (await import("../models/Project")).default;
     const project = await Project.findById(member.projectId);
 

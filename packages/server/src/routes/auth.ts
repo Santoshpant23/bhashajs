@@ -11,6 +11,7 @@ import { Router, Request, Response } from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import User from "../models/User";
+import ProjectMember from "../models/ProjectMember";
 import { sendSuccess, sendError } from "../utils/response";
 import {
   validateAll,
@@ -50,6 +51,27 @@ router.post("/register", async (req: Request, res: Response) => {
       email: email.toLowerCase().trim(),
       password: hashedPassword,
     });
+
+    // Auto-claim any pending invites that were sent to this email before signup.
+    // Without this, a user clicking an invite link, signing up, and then losing
+    // the redirect (browser history, ad-blocker, etc.) would never become an
+    // active member — the dashboard would show empty and the owner would still
+    // see them as "pending".
+    try {
+      await ProjectMember.updateMany(
+        {
+          email: user.email,
+          status: "pending",
+          userId: null,
+        },
+        {
+          $set: { userId: user._id, status: "active" },
+          $unset: { inviteToken: "" },
+        }
+      );
+    } catch (_) {
+      // Non-critical — registration still succeeds even if claim fails.
+    }
 
     // Generate JWT with userId as payload
     const token = jwt.sign(

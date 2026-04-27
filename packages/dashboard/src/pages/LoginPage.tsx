@@ -8,7 +8,7 @@
 
 import { useState } from "react";
 import { useAuth } from "../context/AuthContext";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { getErrorMessage } from "../utils/api";
 
 export default function LoginPage() {
@@ -18,6 +18,11 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const { login } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+
+  // Honor ?redirect= so an invite link can route through login and back to /join.
+  const redirect = searchParams.get("redirect");
+  const safeRedirect = redirect && redirect.startsWith("/") ? redirect : "/projects";
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -25,7 +30,7 @@ export default function LoginPage() {
     setLoading(true);
     try {
       await login(email, password);
-      navigate("/projects");
+      navigate(safeRedirect);
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
@@ -70,7 +75,10 @@ export default function LoginPage() {
         </form>
 
         <p className="auth-footer">
-          Don't have an account? <Link to="/register">Create one</Link>
+          Don't have an account?{" "}
+          <Link to={redirect ? `/register?redirect=${encodeURIComponent(redirect)}` : "/register"}>
+            Create one
+          </Link>
         </p>
       </div>
     </div>

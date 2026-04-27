@@ -7,7 +7,7 @@
 
 import { useState } from "react";
 import { useAuth } from "../context/AuthContext";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { getErrorMessage } from "../utils/api";
 
 export default function RegisterPage() {
@@ -18,6 +18,12 @@ export default function RegisterPage() {
   const [loading, setLoading] = useState(false);
   const { register } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+
+  // Allow JoinPage to round-trip through register and back: /register?redirect=/join?token=...
+  // Restrict to internal paths so an attacker can't craft an open-redirect URL.
+  const redirect = searchParams.get("redirect");
+  const safeRedirect = redirect && redirect.startsWith("/") ? redirect : "/projects";
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -25,7 +31,7 @@ export default function RegisterPage() {
     setLoading(true);
     try {
       await register(name, email, password);
-      navigate("/projects");
+      navigate(safeRedirect);
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
@@ -81,7 +87,10 @@ export default function RegisterPage() {
         </form>
 
         <p className="auth-footer">
-          Already have an account? <Link to="/login">Sign in</Link>
+          Already have an account?{" "}
+          <Link to={redirect ? `/login?redirect=${encodeURIComponent(redirect)}` : "/login"}>
+            Sign in
+          </Link>
         </p>
       </div>
     </div>

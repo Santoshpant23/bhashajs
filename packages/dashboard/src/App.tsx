@@ -6,7 +6,7 @@
  * PublicRoute: redirects to /projects if already logged in.
  */
 
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { NotificationProvider } from "./context/NotificationContext";
 import LoginPage from "./pages/LoginPage";
@@ -24,7 +24,15 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
 function PublicRoute({ children }: { children: React.ReactNode }) {
   const { isLoggedIn } = useAuth();
-  if (isLoggedIn) return <Navigate to="/projects" />;
+  const location = useLocation();
+  if (isLoggedIn) {
+    // If the URL carries ?redirect=/something, send the already-logged-in user there
+    // instead of bouncing them to /projects (matters for invite flows).
+    const params = new URLSearchParams(location.search);
+    const redirect = params.get("redirect");
+    const safe = redirect && redirect.startsWith("/") ? redirect : "/projects";
+    return <Navigate to={safe} replace />;
+  }
   return <>{children}</>;
 }
 
