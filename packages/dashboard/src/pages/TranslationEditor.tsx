@@ -43,13 +43,56 @@ import {
 } from "lucide-react";
 import { useNotifications } from "../context/NotificationContext";
 
+// Three registers, mirroring the server. Add new ones in lockstep here.
+type Register = "default" | "formal" | "casual";
+const REGISTERS: Register[] = ["default", "formal", "casual"];
+const REGISTER_LABELS: Record<Register, string> = {
+  default: "Default",
+  formal: "Formal",
+  casual: "Casual",
+};
+const REGISTER_HINTS: Record<Register, string> = {
+  default: "Neutral conversational tone",
+  formal: "Honorific, native-vocabulary — for legal / banking / gov UI",
+  casual: "Gen-Z friendly, code-mixing with English encouraged",
+};
+
 interface Translation {
   _id: string;
   key: string;
-  translations: Record<string, string>;
+  // Nested by (lang → register → string). Server returns the full nested map;
+  // the editor reads the slice for the currently active register.
+  translations: Record<string, Record<string, string>>;
   context?: string;
   source: string;
-  sources?: Record<string, string>; // per-language: "human" | "ai" | "approved"
+  sources?: Record<string, Record<string, string>>; // per (lang, register): "human" | "ai" | "approved"
+}
+
+/** Read a (lang, register) cell, with default-register fallback so a partially
+ *  localized casual register still shows something useful in the UI. */
+function valueAt(t: Translation, lang: string, register: Register): string {
+  const langMap = t.translations?.[lang];
+  if (!langMap) return "";
+  return langMap[register] || langMap.default || "";
+}
+
+/** Read the source provenance for a (lang, register) cell. */
+function sourceAt(t: Translation, lang: string, register: Register): string | undefined {
+  const langMap = t.sources?.[lang];
+  if (!langMap) return undefined;
+  return langMap[register] || langMap.default;
+}
+
+/** Write a (lang, register) cell on a Translation in local state. */
+function withValue(
+  t: Translation,
+  lang: string,
+  register: Register,
+  value: string
+): Translation {
+  const next = { ...t, translations: { ...t.translations } };
+  next.translations[lang] = { ...(next.translations[lang] || {}), [register]: value };
+  return next;
 }
 
 interface Project {
@@ -86,6 +129,7 @@ interface LangStats {
 interface HistoryEntry {
   _id: string;
   lang: string;
+  register?: Register;
   key: string;
   oldValue: string;
   newValue: string;
@@ -143,6 +187,21 @@ export default function TranslationEditor() {
   const [searchQuery, setSearchQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
+
+  // Active register — drives which (lang, register) slice the editor reads
+  // and which cell edits/AI runs target. Persisted to localStorage so a
+  // translator who lives in "casual" mode doesn't have to reset it every visit.
+  const [currentRegister, setCurrentRegister] = useState<Register>(() => {
+    const saved = typeof window !== "undefined"
+      ? (window.localStorage.getItem("bhashajs_register") as Register | null)
+      : null;
+    return saved && REGISTERS.includes(saved) ? saved : "default";
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("bhashajs_register", currentRegister);
+    } catch { /* localStorage may be blocked — non-critical */ }
+  }, [currentRegister]);
 
   // Filters
   type StatusFilter = "all" | "untranslated" | "ai-pending" | "approved";
@@ -321,20 +380,18 @@ export default function TranslationEditor() {
     }
   }
 
-  // Update local state when user types in a cell
+  // Update local state when user types in a cell — only the active register's
+  // cell is modified, never disturbing other registers.
   function handleValueChange(translationId: string, lang: string, value: string) {
     setHasUnsaved(true);
     lastEditedLangRef.current = lang;
     setTranslations((prev) =>
-      prev.map((t) =>
-        t._id === translationId
-          ? { ...t, translations: { ...t.translations, [lang]: value } }
-          : t
-      )
+      prev.map((t) => (t._id === translationId ? withValue(t, lang, currentRegister, value) : t))
     );
   }
 
-  // Save to server when user clicks out of a cell (onBlur)
+  // Save to server when user clicks out of a cell (onBlur). The server only
+  // touches the (editedLang, editedRegister) cell, so we send just that pair.
   async function saveTranslation(translation: Translation, editedLang?: string) {
     setSaving(translation._id);
     try {
@@ -343,13 +400,19 @@ export default function TranslationEditor() {
         context: translation.context,
         source: "human",
         editedLang,
+        editedRegister: currentRegister,
       });
-      // Update local state to reflect the per-language source change
+      // Update local state to reflect the per-(lang, register) source change
       setTranslations((prev) =>
         prev.map((t) => {
           if (t._id !== translation._id) return t;
-          const updatedSources = { ...t.sources };
-          if (editedLang) updatedSources[editedLang] = "human";
+          const updatedSources = { ...(t.sources || {}) };
+          if (editedLang) {
+            updatedSources[editedLang] = {
+              ...(updatedSources[editedLang] || {}),
+              [currentRegister]: "human",
+            };
+          }
           return { ...t, source: "human", sources: updatedSources };
         })
       );
@@ -362,10 +425,15 @@ export default function TranslationEditor() {
     }
   }
 
-  // Approve or reject an AI translation for a specific language
+  // Approve or reject an AI translation for the currently selected register
+  // of a given language. Reviewing in "casual" never touches "default".
   async function reviewTranslation(translationId: string, lang: string, action: "approve" | "reject") {
     try {
-      await api.post(`/translations/${translationId}/review`, { lang, action });
+      await api.post(`/translations/${translationId}/review`, {
+        lang,
+        action,
+        register: currentRegister,
+      });
       fetchTranslations();
       fetchStats();
     } catch (e) {
@@ -387,9 +455,10 @@ export default function TranslationEditor() {
   // ─── AI Translation ──────────────────────────────────────────
 
   // Count how many keys are missing translations for a given language
+  // at the currently active register.
   function missingForLang(lang: string): number {
     return translations.filter(
-      (t) => t.translations["en"]?.trim() && !t.translations[lang]?.trim()
+      (t) => valueAt(t, "en", "default").trim() && !valueAt(t, lang, currentRegister).trim()
     ).length;
   }
 
@@ -401,9 +470,10 @@ export default function TranslationEditor() {
     try {
       const res = await api.post(`/translations/${projectId}/ai-translate`, {
         targetLang: aiTargetLang,
+        register: currentRegister,
       });
       const data = res.data.data;
-      setAIResult(`${data.translated} translations generated for ${LANG_NAMES[aiTargetLang] || aiTargetLang}`);
+      setAIResult(`${data.translated} ${currentRegister} translations generated for ${LANG_NAMES[aiTargetLang] || aiTargetLang}`);
       fetchTranslations();
       fetchStats();
     } catch (e) {
@@ -726,32 +796,33 @@ export default function TranslationEditor() {
 
   // ─── Export ──────────────────────────────────────────────────
 
-  // Export all languages combined
+  // Export all languages combined — uses the currently active register.
+  // Filename includes the register so a multi-register export doesn't clobber
+  // a default-register one with the same name.
   function exportAll() {
     if (!project) return;
     const exportData: Record<string, Record<string, string>> = {};
     for (const lang of project.supportedLanguages) {
       exportData[lang] = {};
       for (const t of translations) {
-        if (t.translations[lang]) {
-          exportData[lang][t.key] = t.translations[lang];
-        }
+        const v = valueAt(t, lang, currentRegister);
+        if (v) exportData[lang][t.key] = v;
       }
     }
-    downloadJson(exportData, `${project.name}-all-translations.json`);
+    downloadJson(exportData, `${project.name}-${currentRegister}-all-translations.json`);
     setShowExport(false);
   }
 
-  // Export a single language as flat JSON (this is what i18n libraries expect)
+  // Export a single language as flat JSON (this is what i18n libraries expect),
+  // at the currently active register.
   function exportLang(lang: string) {
     if (!project) return;
     const exportData: Record<string, string> = {};
     for (const t of translations) {
-      if (t.translations[lang]) {
-        exportData[t.key] = t.translations[lang];
-      }
+      const v = valueAt(t, lang, currentRegister);
+      if (v) exportData[t.key] = v;
     }
-    downloadJson(exportData, `${project.name}-${lang}.json`);
+    downloadJson(exportData, `${project.name}-${lang}-${currentRegister}.json`);
     setShowExport(false);
   }
 
@@ -775,7 +846,7 @@ export default function TranslationEditor() {
     URL.revokeObjectURL(url);
   }
 
-  // Export as CSV (all languages)
+  // Export as CSV (all languages) at the active register.
   function exportCSV() {
     if (!project) return;
     const langs = project.supportedLanguages;
@@ -784,94 +855,104 @@ export default function TranslationEditor() {
       const cols = [
         `"${t.key.replace(/"/g, '""')}"`,
         ...langs.map((lang) => {
-          const val = (t.translations[lang] || "").replace(/"/g, '""');
+          const val = valueAt(t, lang, currentRegister).replace(/"/g, '""');
           return `"${val}"`;
         }),
       ];
       return cols.join(",");
     });
-    downloadBlob([header, ...rows].join("\n"), `${project.name}-translations.csv`, "text/csv;charset=utf-8;");
+    downloadBlob([header, ...rows].join("\n"), `${project.name}-${currentRegister}-translations.csv`, "text/csv;charset=utf-8;");
     setShowExport(false);
   }
 
-  // Export as Android XML (per language)
+  // Export as Android XML (per language) at the active register.
   function exportAndroidXML(lang: string) {
     if (!project) return;
     const lines = ['<?xml version="1.0" encoding="utf-8"?>', "<resources>"];
     for (const t of translations) {
-      const val = t.translations[lang];
+      const val = valueAt(t, lang, currentRegister);
       if (!val) continue;
       const escaped = val.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/'/g, "\\'");
       const resName = t.key.replace(/\./g, "_");
       lines.push(`  <string name="${resName}">${escaped}</string>`);
     }
     lines.push("</resources>");
-    downloadBlob(lines.join("\n"), `strings-${lang}.xml`, "application/xml");
+    downloadBlob(lines.join("\n"), `strings-${lang}-${currentRegister}.xml`, "application/xml");
     setShowExport(false);
   }
 
-  // Export as iOS .strings (per language)
+  // Export as iOS .strings (per language) at the active register.
   function exportIOSStrings(lang: string) {
     if (!project) return;
-    const lines = [`/* ${project.name} — ${lang} */`, ""];
+    const lines = [`/* ${project.name} — ${lang} (${currentRegister}) */`, ""];
     for (const t of translations) {
-      const val = t.translations[lang];
+      const val = valueAt(t, lang, currentRegister);
       if (!val) continue;
       if (t.context) lines.push(`/* ${t.context} */`);
       lines.push(`"${t.key}" = "${val.replace(/"/g, '\\"')}";`);
       lines.push("");
     }
-    downloadBlob(lines.join("\n"), `${lang}.strings`, "text/plain");
+    downloadBlob(lines.join("\n"), `${lang}-${currentRegister}.strings`, "text/plain");
     setShowExport(false);
   }
 
   // ─── Helpers ─────────────────────────────────────────────────
 
-  // Count missing translations for a key
+  // Count missing translations for a key at the active register.
   function missingCount(translation: Translation): number {
     if (!project) return 0;
     return project.supportedLanguages.filter(
-      (lang) => !translation.translations[lang]?.trim()
+      (lang) => !valueAt(translation, lang, currentRegister).trim()
     ).length;
   }
 
-  // Filter translations by search query + status + language
+  // Filter translations by search query + status + language. All checks operate
+  // on the active register (so "untranslated" in casual mode means
+  // "casual variant missing", not "default missing").
   const filtered = translations.filter((t) => {
-    // Text search
+    // Text search — also walks across registers so a known phrase finds its key
+    // even if the user is currently viewing a different register.
     const q = searchQuery.toLowerCase();
     if (q) {
       const inKey = t.key.toLowerCase().includes(q);
-      const inValues = Object.values(t.translations).some((v) =>
-        v.toLowerCase().includes(q)
-      );
+      let inValues = false;
+      outer: for (const langMap of Object.values(t.translations || {})) {
+        if (!langMap || typeof langMap !== "object") continue;
+        for (const v of Object.values(langMap)) {
+          if (typeof v === "string" && v.toLowerCase().includes(q)) {
+            inValues = true;
+            break outer;
+          }
+        }
+      }
       if (!inKey && !inValues) return false;
     }
     // Status filter
     if (statusFilter !== "all") {
       if (langFilter !== "all") {
-        // Apply to specific language
-        const src = t.sources?.[langFilter];
-        if (statusFilter === "untranslated" && t.translations[langFilter]?.trim()) return false;
+        // Apply to specific language at the active register
+        const src = sourceAt(t, langFilter, currentRegister);
+        if (statusFilter === "untranslated" && valueAt(t, langFilter, currentRegister).trim()) return false;
         if (statusFilter === "ai-pending" && src !== "ai") return false;
         if (statusFilter === "approved" && src !== "approved") return false;
       } else {
-        // Apply across all languages
+        // Apply across all languages at the active register
         if (statusFilter === "untranslated") {
           const hasMissing = project?.supportedLanguages.some(
-            (lang) => lang !== "en" && !t.translations[lang]?.trim()
+            (lang) => lang !== "en" && !valueAt(t, lang, currentRegister).trim()
           );
           if (!hasMissing) return false;
         } else if (statusFilter === "ai-pending") {
-          const hasAI = project?.supportedLanguages.some((lang) => t.sources?.[lang] === "ai");
+          const hasAI = project?.supportedLanguages.some((lang) => sourceAt(t, lang, currentRegister) === "ai");
           if (!hasAI) return false;
         } else if (statusFilter === "approved") {
-          const hasApproved = project?.supportedLanguages.some((lang) => t.sources?.[lang] === "approved");
+          const hasApproved = project?.supportedLanguages.some((lang) => sourceAt(t, lang, currentRegister) === "approved");
           if (!hasApproved) return false;
         }
       }
     } else if (langFilter !== "all") {
-      // Language-only filter: show keys missing this language
-      if (t.translations[langFilter]?.trim()) return false;
+      // Language-only filter: show keys missing this language at the active register
+      if (valueAt(t, langFilter, currentRegister).trim()) return false;
     }
     return true;
   });
@@ -1483,7 +1564,7 @@ export default function TranslationEditor() {
                         textAlign: RTL_LANGS.has(lang) ? "right" : "left",
                       }}
                     >
-                      {previewTranslation.translations[lang] || (
+                      {valueAt(previewTranslation, lang, currentRegister) || (
                         <span className="preview-empty">No translation</span>
                       )}
                     </p>
@@ -1579,13 +1660,18 @@ export default function TranslationEditor() {
                       )}
                     </td>
 
-                    {/* Language columns */}
+                    {/* Language columns — show the active register's cell.
+                        English is locked to "default" since English doesn't get
+                        formal/casual variants in this product. */}
                     {project?.supportedLanguages.map((lang, colIdx) => {
-                      const langSource = t.sources?.[lang];
+                      const langRegister = lang === "en" ? "default" : currentRegister;
+                      const langSource = sourceAt(t, lang, langRegister);
                       const isAI = langSource === "ai";
                       const isApproved = langSource === "approved";
                       const editable = canEditLang(lang);
                       const rowIdx = filtered.indexOf(t);
+                      const cellValue = valueAt(t, lang, langRegister);
+                      const enValue = valueAt(t, "en", "default");
                       return (
                         <td key={lang} className="col-lang">
                           <div className="cell-wrapper">
@@ -1594,9 +1680,9 @@ export default function TranslationEditor() {
                               className={`cell-input ${RTL_LANGS.has(lang) ? "rtl" : ""}`}
                               data-row={rowIdx}
                               data-col={colIdx}
-                              value={t.translations[lang] || ""}
+                              value={cellValue}
                               onChange={(e) => handleValueChange(t._id, lang, e.target.value)}
-                              onFocus={() => handleCellFocus(t._id, lang, t.translations[lang] || "")}
+                              onFocus={() => handleCellFocus(t._id, lang, cellValue)}
                               onBlur={() => { saveTranslation(t, lastEditedLangRef.current); setCellFocused(false); }}
                               onKeyDown={(e) => handleCellKeyDown(e, t, lang)}
                               placeholder={`${LANG_NAMES[lang] || lang}...`}
@@ -1629,7 +1715,7 @@ export default function TranslationEditor() {
                               {isApproved && (
                                 <span className="approved-badge-cell">Approved</span>
                               )}
-                              {t.translations[lang] && (
+                              {cellValue && (
                                 <button
                                   className="btn-icon btn-history"
                                   title="View history"
@@ -1638,8 +1724,8 @@ export default function TranslationEditor() {
                                   <Clock size={10} />
                                 </button>
                               )}
-                              {lang === "en" && t.translations.en && glossaryTermSet.size > 0 &&
-                                t.translations.en.toLowerCase().split(/\s+/).some((w) => glossaryTermSet.has(w)) && (
+                              {lang === "en" && enValue && glossaryTermSet.size > 0 &&
+                                enValue.toLowerCase().split(/\s+/).some((w: string) => glossaryTermSet.has(w)) && (
                                 <span className="glossary-dot" title="Contains glossary terms">
                                   <BookOpen size={10} />
                                 </span>

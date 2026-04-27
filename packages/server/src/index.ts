@@ -19,6 +19,7 @@ import notificationRoutes from "./routes/notifications";
 import commentRoutes from "./routes/comments";
 import glossaryRoutes from "./routes/glossary";
 import sdkRoutes from "./routes/sdk";
+import { migrateRegisters } from "./utils/migrateRegisters";
 
 dotenv.config();
 
@@ -135,8 +136,9 @@ async function start() {
     await mongoose.connect(process.env.MONGO_CONNECTION_URL || "");
     console.log("MongoDB connected successfully");
 
-    // Run one-time migration (idempotent)
+    // Run one-time migrations (idempotent)
     await migrateOwnerMemberships();
+    await migrateRegisters();
 
     const port = process.env.PORT || 5000;
     app.listen(port, () => {

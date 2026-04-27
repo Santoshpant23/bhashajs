@@ -55,4 +55,5 @@ export type {
   NumberFormatOptions,
   CurrencyFormatOptions,
   DateFormatOptions,
+  Register,
 } from "./types";

@@ -73,10 +73,16 @@ export default function JoinPage() {
             <h2>You've been invited!</h2>
             <p>Log in or create an account to accept this invite.</p>
             <div className="join-actions">
-              <Link to={`/login?redirect=/join?token=${token}`} className="btn-primary">
+              <Link
+                to={`/login?redirect=${encodeURIComponent(`/join?token=${token}`)}`}
+                className="btn-primary"
+              >
                 Log In
               </Link>
-              <Link to={`/register?redirect=/join?token=${token}`} className="btn-ghost">
+              <Link
+                to={`/register?redirect=${encodeURIComponent(`/join?token=${token}`)}`}
+                className="btn-ghost"
+              >
                 Create Account
               </Link>
             </div>

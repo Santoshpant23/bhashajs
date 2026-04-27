@@ -33,6 +33,15 @@ import { sendSuccess, sendError } from "../utils/response";
 import { validateRequired, validateObjectId } from "../utils/validate";
 import { getAIProvider, TranslationInput, MemoryExample, GlossaryTerm } from "../services/ai-provider";
 import GlossaryEntry from "../models/GlossaryEntry";
+import {
+  coerceRegister,
+  readValue,
+  writeValue,
+  iterateCells,
+  DEFAULT_REGISTER,
+  Register,
+} from "../utils/registers";
+import { isValidRegister, REGISTERS } from "../models/Translation";
 
 const router = Router();
 
@@ -44,6 +53,7 @@ async function recordHistory(
   translationId: any,
   projectId: any,
   lang: string,
+  register: Register,
   key: string,
   oldValue: string,
   newValue: string,
@@ -56,6 +66,7 @@ async function recordHistory(
       translationId,
       projectId,
       lang,
+      register,
       key,
       oldValue: oldValue || "",
       newValue,
@@ -66,6 +77,39 @@ async function recordHistory(
     // History recording is non-critical — don't fail the request
     console.error("[BhashaJS] Failed to record history:", e);
   }
+}
+
+/**
+ * Normalize a write payload from the client.
+ *
+ * Old clients send flat-per-language values:
+ *   { translations: { hi: "स्वागत" } }
+ * New clients send nested per-register values:
+ *   { translations: { hi: { default: "स्वागत", casual: "Welcome!" } } }
+ *
+ * This collapses both into the nested form keyed by the supplied
+ * fallback register (typically "default" for plain flat input).
+ */
+function normalizePayload(
+  raw: any,
+  fallbackRegister: Register
+): Record<string, Record<string, string>> {
+  if (!raw || typeof raw !== "object") return {};
+  const out: Record<string, Record<string, string>> = {};
+  for (const [lang, val] of Object.entries(raw)) {
+    if (typeof val === "string") {
+      out[lang] = { [fallbackRegister]: val };
+    } else if (val && typeof val === "object" && !Array.isArray(val)) {
+      const inner: Record<string, string> = {};
+      for (const [reg, v] of Object.entries(val as Record<string, unknown>)) {
+        if (typeof v !== "string") continue;
+        if (!isValidRegister(reg)) continue;
+        inner[reg] = v;
+      }
+      if (Object.keys(inner).length > 0) out[lang] = inner;
+    }
+  }
+  return out;
 }
 
 // ─── GET ALL TRANSLATIONS FOR A PROJECT ──────────────────────
@@ -80,12 +124,17 @@ router.get(
       const idError = validateObjectId(projectId as string, "Project ID");
       if (idError) return sendError(res, 400, idError);
 
-      // Flat lang export (SDK uses ?lang=hi) — no pagination
+      // Flat lang export (dashboard preview / SDK fallback uses ?lang=hi&register=casual)
+      // — no pagination. Falls back to "default" register if the requested one is empty.
       if (lang && typeof lang === "string") {
+        const reg = coerceRegister(req.query.register);
         const translations = await Translation.find({ projectId });
         const flat: Record<string, string> = {};
         for (const t of translations) {
-          const value = t.translations?.get(lang);
+          let value = readValue(t.translations as any, lang, reg);
+          if (!value && reg !== DEFAULT_REGISTER) {
+            value = readValue(t.translations as any, lang, DEFAULT_REGISTER);
+          }
           if (value) flat[t.key] = value;
         }
         return sendSuccess(res, 200, flat);
@@ -124,7 +173,10 @@ router.get(
 );
 
 // ─── GET TRANSLATION STATS ───────────────────────────────────
-// Returns completion percentage + source breakdown per language
+// Returns completion percentage + source breakdown per (language, register).
+// Top-level `languages` keeps the legacy shape (default-register stats) so the
+// existing dashboard summary doesn't break before Phase 1.5.
+// `registers` adds the new breakdown: registers[lang][register] = { ... }.
 router.get(
   "/:projectId/stats",
   requireProjectRole("owner", "translator", "viewer"),
@@ -141,43 +193,56 @@ router.get(
       const translations = await Translation.find({ projectId });
       const totalKeys = translations.length;
 
-      const stats: Record<
-        string,
-        {
-          translated: number;
-          total: number;
-          percentage: number;
-          sources: { human: number; ai: number; approved: number };
-        }
-      > = {};
+      type CellStats = {
+        translated: number;
+        total: number;
+        percentage: number;
+        sources: { human: number; ai: number; approved: number };
+      };
+
+      const empty = (): CellStats => ({
+        translated: 0,
+        total: totalKeys,
+        percentage: 0,
+        sources: { human: 0, ai: 0, approved: 0 },
+      });
+
+      const registers: Record<string, Record<string, CellStats>> = {};
+      const languages: Record<string, CellStats> = {};
 
       for (const lang of project.supportedLanguages) {
-        let translated = 0;
-        let humanCount = 0;
-        let aiCount = 0;
-        let approvedCount = 0;
-
-        for (const t of translations) {
-          const value = t.translations?.get(lang);
-          if (value && value.trim()) {
-            translated++;
-          }
-          const langSource = t.sources?.get(lang);
-          if (langSource === "human") humanCount++;
-          else if (langSource === "ai") aiCount++;
-          else if (langSource === "approved") approvedCount++;
+        registers[lang] = {};
+        for (const reg of REGISTERS) {
+          registers[lang][reg] = empty();
         }
-
-        stats[lang] = {
-          translated,
-          total: totalKeys,
-          percentage:
-            totalKeys > 0 ? Math.round((translated / totalKeys) * 100) : 0,
-          sources: { human: humanCount, ai: aiCount, approved: approvedCount },
-        };
+        languages[lang] = empty();
       }
 
-      return sendSuccess(res, 200, { totalKeys, languages: stats });
+      for (const t of translations) {
+        for (const lang of project.supportedLanguages) {
+          for (const reg of REGISTERS) {
+            const cell = registers[lang][reg];
+            const value = readValue(t.translations as any, lang, reg);
+            if (value && value.trim()) cell.translated++;
+            const src = readValue(t.sources as any, lang, reg);
+            if (src === "human") cell.sources.human++;
+            else if (src === "ai") cell.sources.ai++;
+            else if (src === "approved") cell.sources.approved++;
+          }
+        }
+      }
+
+      // Compute percentages + back-compat top-level summary using "default".
+      for (const lang of project.supportedLanguages) {
+        for (const reg of REGISTERS) {
+          const cell = registers[lang][reg];
+          cell.percentage =
+            totalKeys > 0 ? Math.round((cell.translated / totalKeys) * 100) : 0;
+        }
+        languages[lang] = registers[lang][DEFAULT_REGISTER];
+      }
+
+      return sendSuccess(res, 200, { totalKeys, languages, registers });
     } catch (e) {
       return sendError(res, 500, "Failed to fetch stats");
     }
@@ -194,6 +259,19 @@ router.get(
 
       const idError = validateObjectId(translationId as string, "Translation ID");
       if (idError) return sendError(res, 400, idError);
+
+      // Resolve the translation so we can verify the requester is a member of
+      // its project — otherwise any logged-in user could read history for any
+      // translation by ID.
+      const translation = await Translation.findById(translationId);
+      if (!translation) return sendError(res, 404, "Translation not found");
+
+      const member = await ProjectMember.findOne({
+        projectId: translation.projectId,
+        userId: req.userId,
+        status: "active",
+      });
+      if (!member) return sendError(res, 403, "Not authorized for this project");
 
       const filter: any = { translationId };
       if (lang && typeof lang === "string") {
@@ -262,29 +340,36 @@ router.post(
         );
       }
 
-      // Build per-language sources map
-      const sourcesMap: Record<string, string> = {};
-      if (translations && typeof translations === "object") {
-        for (const lang of Object.keys(translations)) {
-          sourcesMap[lang] = source || "human";
+      // Accept flat-per-language ({hi: "x"}) or nested-per-register
+      // ({hi: {default: "x", casual: "y"}}) shapes. Flat values default to
+      // the "default" register so old clients keep working unchanged.
+      const incomingRegister = coerceRegister(req.body.register);
+      const normalized = normalizePayload(translations, incomingRegister);
+
+      // Mirror the same shape into sources, stamping each cell with `source`.
+      const sourcesMap: Record<string, Record<string, string>> = {};
+      for (const [lang, langMap] of Object.entries(normalized)) {
+        sourcesMap[lang] = {};
+        for (const reg of Object.keys(langMap)) {
+          sourcesMap[lang][reg] = source || "human";
         }
       }
 
       const translation = await Translation.create({
         projectId: new mongoose.Types.ObjectId(projectId as string),
         key: key.trim(),
-        translations: translations || {},
+        translations: normalized,
         context: context?.trim() || undefined,
         source: source || "human",
         sources: sourcesMap,
       });
 
-      // Record history for each initial translation
-      if (translations && typeof translations === "object") {
-        for (const [lang, value] of Object.entries(translations)) {
-          if (typeof value === "string" && value.trim()) {
+      // Record history for each initial (lang, register) cell
+      for (const [lang, langMap] of Object.entries(normalized)) {
+        for (const [reg, value] of Object.entries(langMap)) {
+          if (value.trim()) {
             await recordHistory(
-              translation._id, projectId, lang, key.trim(),
+              translation._id, projectId, lang, reg as Register, key.trim(),
               "", value, "human", req.userId!
             );
           }
@@ -327,6 +412,10 @@ router.post(
         return sendError(res, 400, "Translations must be an object of key-value pairs");
       }
 
+      // Bulk import targets a single (lang, register) cell. Defaults to
+      // "default" so legacy clients that don't know about registers keep working.
+      const register = coerceRegister(req.body.register);
+
       let created = 0;
       let updated = 0;
 
@@ -336,14 +425,13 @@ router.post(
         const existing = await Translation.findOne({ projectId, key });
 
         if (existing) {
-          const oldValue = existing.translations?.get(lang) || "";
-          existing.translations?.set(lang, value);
-          if (!existing.sources) existing.sources = new Map();
-          existing.sources.set(lang, "human");
+          const oldValue = readValue(existing.translations as any, lang, register) || "";
+          writeValue(existing, "translations", lang, register, value);
+          writeValue(existing, "sources", lang, register, "human");
           existing.updatedAt = new Date();
           await existing.save();
           await recordHistory(
-            existing._id, projectId, lang, key,
+            existing._id, projectId, lang, register, key,
             oldValue, value, "human", req.userId!
           );
           updated++;
@@ -351,12 +439,12 @@ router.post(
           const newT = await Translation.create({
             projectId: new mongoose.Types.ObjectId(projectId as string),
             key,
-            translations: { [lang]: value },
+            translations: { [lang]: { [register]: value } },
             source: "human",
-            sources: { [lang]: "human" },
+            sources: { [lang]: { [register]: "human" } },
           });
           await recordHistory(
-            newT._id, projectId, lang, key,
+            newT._id, projectId, lang, register, key,
             "", value, "human", req.userId!
           );
           created++;
@@ -375,10 +463,16 @@ router.post(
 );
 
 // ─── UPDATE A TRANSLATION ────────────────────────────────────
+//
+// Edit semantics: the client must send `editedLang` and may send
+// `editedRegister` (defaults to "default"). The route updates only that one
+// (lang, register) cell — never overwrites unrelated cells, even if the
+// client's `translations` payload happens to include other languages.
 router.put("/:id", async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const { translations, context, source, editedLang } = req.body;
+    const editedRegister = coerceRegister(req.body.editedRegister);
 
     const idError = validateObjectId(id as string, "Translation ID");
     if (idError) return sendError(res, 400, idError);
@@ -404,27 +498,27 @@ router.put("/:id", async (req: AuthRequest, res: Response) => {
       }
     }
 
-    // Record history for edited language before updating
-    if (editedLang && translations && translations[editedLang] !== undefined) {
-      const oldValue = translation.translations?.get(editedLang) || "";
-      const newValue = translations[editedLang];
-      await recordHistory(
-        translation._id, translation.projectId, editedLang, translation.key,
-        oldValue, newValue, "human", req.userId!
-      );
-    }
-
-    // Update the translations map
-    if (translations && typeof translations === "object") {
-      for (const [lang, value] of Object.entries(translations)) {
-        translation.translations?.set(lang, value as string);
+    // Pull the new value out of the payload. We accept both the legacy flat
+    // shape (`translations[editedLang]` is a string) and the nested shape
+    // (`translations[editedLang][editedRegister]` is a string).
+    let newValue: string | undefined;
+    if (editedLang && translations && typeof translations === "object") {
+      const langEntry = translations[editedLang];
+      if (typeof langEntry === "string") {
+        newValue = langEntry;
+      } else if (langEntry && typeof langEntry === "object") {
+        newValue = langEntry[editedRegister];
       }
     }
 
-    // Per-language source tracking
-    if (editedLang) {
-      if (!translation.sources) translation.sources = new Map();
-      translation.sources.set(editedLang, "human");
+    if (editedLang && typeof newValue === "string") {
+      const oldValue = readValue(translation.translations as any, editedLang, editedRegister) || "";
+      await recordHistory(
+        translation._id, translation.projectId, editedLang, editedRegister,
+        translation.key, oldValue, newValue, "human", req.userId!
+      );
+      writeValue(translation, "translations", editedLang, editedRegister, newValue);
+      writeValue(translation, "sources", editedLang, editedRegister, "human");
     }
 
     if (source) translation.source = source;
@@ -441,7 +535,7 @@ router.put("/:id", async (req: AuthRequest, res: Response) => {
           await Notification.create({
             userId: project.owner,
             type: "translator_edit",
-            message: `${member.email} updated "${translation.key}" (${editedLang}) in "${project.name}"`,
+            message: `${member.email} updated "${translation.key}" (${editedLang}/${editedRegister}) in "${project.name}"`,
             projectId: translation.projectId,
           });
         }
@@ -489,6 +583,11 @@ router.delete("/:id", async (req: AuthRequest, res: Response) => {
 });
 
 // ─── AI-POWERED TRANSLATION ─────────────────────────────────
+//
+// Translates English source strings (always read from the "default" register —
+// English doesn't get formal/casual variants in this product) into the target
+// language at the requested register. Defaults to "default" register if the
+// caller doesn't specify, preserving old client behavior.
 router.post(
   "/:projectId/ai-translate",
   requireProjectRole("owner", "translator"),
@@ -496,6 +595,7 @@ router.post(
     try {
       const { projectId } = req.params;
       const { targetLang, keys } = req.body;
+      const targetRegister = coerceRegister(req.body.register);
 
       const idError = validateObjectId(projectId as string, "Project ID");
       if (idError) return sendError(res, 400, idError);
@@ -524,9 +624,9 @@ router.post(
       const allTranslations = await Translation.find({ projectId });
 
       let toTranslate = allTranslations.filter((t) => {
-        const hasEnglish = t.translations?.get("en")?.trim();
-        const missingTarget = !t.translations?.get(targetLang)?.trim();
-        return hasEnglish && missingTarget;
+        const englishSource = readValue(t.translations as any, "en", DEFAULT_REGISTER);
+        const existing = readValue(t.translations as any, targetLang, targetRegister);
+        return englishSource && englishSource.trim() && !(existing && existing.trim());
       });
 
       if (keys && Array.isArray(keys) && keys.length > 0) {
@@ -550,13 +650,17 @@ router.post(
 
       const inputs: TranslationInput[] = toTranslate.map((t) => ({
         key: t.key,
-        text: t.translations!.get("en")!,
+        text: readValue(t.translations as any, "en", DEFAULT_REGISTER)!,
         context: t.context || undefined,
       }));
 
+      // Memory is stratified by register so a "casual" request only sees
+      // casual examples — keeps the model from accidentally borrowing
+      // formal phrasing into a casual translation.
       const memoryEntries = await TranslationMemory.find({
         projectId,
         lang: targetLang,
+        register: targetRegister,
       }).limit(20);
 
       const memory = memoryEntries.map((m) => ({
@@ -575,21 +679,27 @@ router.post(
 
       const aiProvider = getAIProvider();
       const targetLangName = langNames[targetLang] || targetLang;
-      const aiResults = await aiProvider.translate(inputs, targetLang, targetLangName, memory, glossary);
+      const aiResults = await aiProvider.translate(
+        inputs,
+        targetLang,
+        targetLangName,
+        memory,
+        glossary,
+        targetRegister
+      );
 
       const translatedKeys: string[] = [];
 
       for (const t of toTranslate) {
         if (aiResults[t.key]) {
-          const oldValue = t.translations?.get(targetLang) || "";
-          t.translations?.set(targetLang, aiResults[t.key]);
+          const oldValue = readValue(t.translations as any, targetLang, targetRegister) || "";
+          writeValue(t, "translations", targetLang, targetRegister, aiResults[t.key]);
+          writeValue(t, "sources", targetLang, targetRegister, "ai");
           t.source = "ai";
-          if (!t.sources) t.sources = new Map();
-          t.sources.set(targetLang, "ai");
           t.updatedAt = new Date();
           await t.save();
           await recordHistory(
-            t._id, projectId, targetLang, t.key,
+            t._id, projectId, targetLang, targetRegister, t.key,
             oldValue, aiResults[t.key], "ai", req.userId!
           );
           translatedKeys.push(t.key);
@@ -610,7 +720,7 @@ router.post(
               await Notification.create({
                 userId: m.userId,
                 type: "ai_translations_ready",
-                message: `${translatedKeys.length} AI translations ready for ${targetLangName} review in "${project.name}"`,
+                message: `${translatedKeys.length} AI translations ready for ${targetLangName} (${targetRegister}) review in "${project.name}"`,
                 projectId: projectId as string,
               });
             }
@@ -619,8 +729,9 @@ router.post(
       }
 
       return sendSuccess(res, 200, {
-        message: `AI translated ${translatedKeys.length} keys to ${targetLangName}`,
+        message: `AI translated ${translatedKeys.length} keys to ${targetLangName} (${targetRegister})`,
         translated: translatedKeys.length,
+        register: targetRegister,
         keys: translatedKeys,
       });
     } catch (e: any) {
@@ -635,6 +746,7 @@ router.post("/:id/review", async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const { lang, action } = req.body;
+    const register = coerceRegister(req.body.register);
 
     const idError = validateObjectId(id as string, "Translation ID");
     if (idError) return sendError(res, 400, idError);
@@ -661,27 +773,26 @@ router.post("/:id/review", async (req: AuthRequest, res: Response) => {
       return sendError(res, 403, `You are not assigned to translate "${lang}"`);
     }
 
-    const translatedValue = translation.translations?.get(lang);
+    const translatedValue = readValue(translation.translations as any, lang, register);
     if (!translatedValue) {
-      return sendError(res, 400, `No translation exists for language "${lang}"`);
+      return sendError(res, 400, `No translation exists for "${lang}" at register "${register}"`);
     }
 
-    if (!translation.sources) translation.sources = new Map();
-
     if (action === "approve") {
-      translation.sources.set(lang, "approved");
+      writeValue(translation, "sources", lang, register, "approved");
 
       // Record history
       await recordHistory(
-        translation._id, translation.projectId, lang, translation.key,
+        translation._id, translation.projectId, lang, register, translation.key,
         translatedValue, translatedValue, "approved", req.userId!
       );
 
-      // Upsert into translation memory
-      const englishText = translation.translations?.get("en");
+      // Memory is stratified by register so an approved "casual" pair
+      // doesn't leak into "formal" suggestions.
+      const englishText = readValue(translation.translations as any, "en", DEFAULT_REGISTER);
       if (englishText) {
         await TranslationMemory.findOneAndUpdate(
-          { projectId: translation.projectId, lang, sourceText: englishText },
+          { projectId: translation.projectId, lang, register, sourceText: englishText },
           {
             translatedText: translatedValue,
             key: translation.key,
@@ -692,20 +803,31 @@ router.post("/:id/review", async (req: AuthRequest, res: Response) => {
         );
       }
     } else {
-      // Reject: record history then remove
+      // Reject: record history then remove only this (lang, register) cell
       await recordHistory(
-        translation._id, translation.projectId, lang, translation.key,
+        translation._id, translation.projectId, lang, register, translation.key,
         translatedValue, "", "rejected", req.userId!
       );
-      translation.translations?.delete(lang);
-      translation.sources.delete(lang);
+      // Surgical delete from the nested map
+      const trMap = translation.translations as any;
+      const srMap = translation.sources as any;
+      if (trMap instanceof Map) {
+        const inner = trMap.get(lang);
+        if (inner instanceof Map) inner.delete(register);
+      }
+      if (srMap instanceof Map) {
+        const inner = srMap.get(lang);
+        if (inner instanceof Map) inner.delete(register);
+      }
+      translation.markModified("translations");
+      translation.markModified("sources");
     }
 
     translation.updatedAt = new Date();
     await translation.save();
 
     return sendSuccess(res, 200, {
-      message: `Translation ${action === "approve" ? "approved" : "rejected"} for ${lang}`,
+      message: `Translation ${action === "approve" ? "approved" : "rejected"} for ${lang} (${register})`,
       translation,
     });
   } catch (e) {
@@ -746,8 +868,21 @@ router.delete("/memory/:id", async (req: AuthRequest, res: Response) => {
     const idError = validateObjectId(id as string, "Memory ID");
     if (idError) return sendError(res, 400, idError);
 
-    const entry = await TranslationMemory.findByIdAndDelete(id);
+    const entry = await TranslationMemory.findById(id);
     if (!entry) return sendError(res, 404, "Memory entry not found");
+
+    // Only members of the entry's project can delete it (and viewers cannot).
+    const member = await ProjectMember.findOne({
+      projectId: entry.projectId,
+      userId: req.userId,
+      status: "active",
+    });
+    if (!member) return sendError(res, 403, "Not authorized for this project");
+    if (member.role === "viewer") {
+      return sendError(res, 403, "Viewers cannot delete memory entries");
+    }
+
+    await entry.deleteOne();
 
     return sendSuccess(res, 200, { message: "Memory entry deleted" });
   } catch (e) {

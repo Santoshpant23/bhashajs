@@ -2,27 +2,27 @@
 //
 // THE MAIN COMPONENT — This is what developers add to their app:
 //
-//   <I18nProvider projectId="abc123" apiToken="...">
+//   <I18nProvider projectKey="bjs_..." register="casual">
 //     <App />
 //   </I18nProvider>
 //
 // What it does behind the scenes:
 //   1. Creates a TranslationClient instance
 //   2. Fetches the project info (to know which languages are supported)
-//   3. Fetches translations for the current language
-//   4. Provides the t() function, current language, and setLang() to all children
-//   5. When language changes, fetches new translations and updates the DOM direction
-//   6. Provides formatNumber(), formatCurrency(), formatDate() for South Asian formatting
+//   3. Fetches the (currentLang, currentRegister) bundle
+//   4. Provides t(), currentLang/setLang, register/setRegister, formatters to children
+//   5. When language or register changes, fetches the right bundle and updates the DOM
 //
-// HOW REACT CONTEXT WORKS (in case you need a refresher):
-// Context is like a "global variable" scoped to a component tree.
-// <I18nProvider> puts data INTO the context.
-// useTranslation() reads data FROM the context.
-// Any component inside <I18nProvider> can call useTranslation()
-// and get the translation function, current language, etc.
+// HOW REGISTER WORKS:
+// `register` is the formality / style of the translation:
+//   - "default" (neutral)
+//   - "formal"  (legal, banking, government, insurance)
+//   - "casual"  (Gen-Z, code-mixing with English encouraged)
+// Set it once on the provider for the whole app, or call setRegister() at runtime
+// (e.g. switch to "formal" when the user enters a compliance/KYC flow).
 
 import { useState, useEffect, useCallback, useRef, ReactNode } from "react";
-import { BhashaConfig, NumberFormatOptions, CurrencyFormatOptions, DateFormatOptions } from "../types";
+import { BhashaConfig, NumberFormatOptions, CurrencyFormatOptions, DateFormatOptions, Register } from "../types";
 import { I18nContext } from "../core/context";
 import { TranslationClient } from "../core/client";
 import { getLangInfo } from "../utils/languages";
@@ -41,6 +41,8 @@ interface I18nProviderProps extends BhashaConfig {
 // Override with `apiUrl` prop if you self-host.
 const DEFAULT_API_URL = "https://api.bhashajs.com";
 
+const DEFAULT_REGISTER: Register = "default";
+
 export function I18nProvider({
   projectId = "",
   projectKey = "",
@@ -50,11 +52,13 @@ export function I18nProvider({
   preloadedTranslations,
   onLanguageChange,
   region,
+  register: initialRegister = DEFAULT_REGISTER,
   children,
 }: I18nProviderProps) {
   // ─── State ───────────────────────────────────────────────────
 
   const [currentLang, setCurrentLang] = useState(defaultLang);
+  const [currentRegister, setCurrentRegister] = useState<Register>(initialRegister);
   const [supportedLangs, setSupportedLangs] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -64,7 +68,6 @@ export function I18nProvider({
   const [, setRenderTrigger] = useState(0);
 
   // useRef to hold the client so it persists across renders
-  // without causing re-renders itself (unlike useState)
   const clientRef = useRef<TranslationClient | null>(null);
 
   // Create the client once on mount
@@ -80,7 +83,6 @@ export function I18nProvider({
   const client = clientRef.current;
 
   // ─── Initialization ──────────────────────────────────────────
-  // On mount: fetch project info and initial translations
 
   useEffect(() => {
     async function init() {
@@ -88,36 +90,33 @@ export function I18nProvider({
       setError(null);
 
       try {
-        // Step 1: If we have preloaded translations, extract supported langs from them
         if (preloadedTranslations) {
           const langs = Object.keys(preloadedTranslations);
           client.setSupportedLangs(langs);
           setSupportedLangs(langs);
         } else {
-          // Step 1: Fetch project info to know which languages are supported
           const langs = await client.fetchProjectInfo();
           setSupportedLangs(langs);
         }
 
-        // Step 2: Fetch translations for the default language
-        if (!preloadedTranslations || !preloadedTranslations[defaultLang]) {
-          await client.fetchTranslations(defaultLang);
-        }
+        // Always fetch the requested register for the default language.
+        await client.fetchTranslations(defaultLang, currentRegister);
 
-        // Step 3: Also fetch English as a fallback (if not the default)
+        // Also fetch English as a fallback (default register only — English
+        // doesn't get formal/casual splits in this product).
         if (defaultLang !== "en") {
-          if (!preloadedTranslations || !preloadedTranslations["en"]) {
-            await client.fetchTranslations("en");
-          }
+          await client.fetchTranslations("en", DEFAULT_REGISTER);
         }
 
-        // Step 4: Preload fonts for all supported languages
-        preloadFonts(client.getSupportedLangs());
+        // If the requested register isn't "default", also pre-warm "default"
+        // for the current lang so register-fallback is instant.
+        if (currentRegister !== DEFAULT_REGISTER) {
+          await client.fetchTranslations(defaultLang, DEFAULT_REGISTER);
+        }
 
-        // Step 5: Apply the initial language direction to the document
+        preloadFonts(client.getSupportedLangs());
         applyLangToDocument(defaultLang);
 
-        // Trigger a re-render now that translations are loaded
         setRenderTrigger((prev) => prev + 1);
       } catch (e: any) {
         setError(e.message || "Failed to initialize BhashaJS");
@@ -128,47 +127,59 @@ export function I18nProvider({
     }
 
     init();
-  }, [projectId]); // Re-init if projectId changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]); // Re-init only if projectId changes
 
   // ─── Language Switching ──────────────────────────────────────
 
   const setLang = useCallback(
     async (newLang: string) => {
-      // Don't do anything if it's already the current language
       if (newLang === currentLang) return;
 
-      // Fetch translations for the new language (will use cache if available)
       setIsLoading(true);
-      await client.fetchTranslations(newLang);
+      await client.fetchTranslations(newLang, currentRegister);
+      // Pre-warm default register for register-fallback if needed.
+      if (currentRegister !== DEFAULT_REGISTER) {
+        await client.fetchTranslations(newLang, DEFAULT_REGISTER);
+      }
       setIsLoading(false);
 
-      // Load the correct font for this language
       loadFontForLang(newLang);
-
-      // Update the document's direction and lang attribute
       applyLangToDocument(newLang);
-
-      // Update state (this re-renders all components using useTranslation)
       setCurrentLang(newLang);
 
-      // Call the developer's callback if provided
       onLanguageChange?.(newLang);
     },
-    [currentLang, client, onLanguageChange]
+    [currentLang, currentRegister, client, onLanguageChange]
+  );
+
+  // ─── Register Switching ──────────────────────────────────────
+
+  const setRegister = useCallback(
+    async (newRegister: Register) => {
+      if (newRegister === currentRegister) return;
+
+      // Fetch the new register bundle for the current lang (and English
+      // fallback) so the switch is instant once the network round-trips.
+      setIsLoading(true);
+      await client.fetchTranslations(currentLang, newRegister);
+      setIsLoading(false);
+
+      setCurrentRegister(newRegister);
+    },
+    [currentLang, currentRegister, client]
   );
 
   // ─── The t() function ────────────────────────────────────────
-  // This is what developers use most: t("hero.title")
 
   const t = useCallback(
     (key: string, params?: Record<string, string | number>): string => {
-      return client.translate(key, currentLang, params);
+      return client.translate(key, currentLang, currentRegister, params);
     },
-    [currentLang, client]
+    [currentLang, currentRegister, client]
   );
 
   // ─── Formatting functions ────────────────────────────────────
-  // South Asian-specific number, currency, and date formatting
 
   const formatNumber = useCallback(
     (value: number, options?: NumberFormatOptions): string => {
@@ -197,6 +208,8 @@ export function I18nProvider({
     currentLang,
     setLang,
     supportedLangs,
+    register: currentRegister,
+    setRegister,
     t,
     isLoading,
     error,
@@ -215,25 +228,15 @@ export function I18nProvider({
 /**
  * Apply language settings to the HTML document.
  *
- * This does three things:
  * 1. Sets <html lang="hi"> — important for SEO and screen readers
  * 2. Sets <html dir="rtl"> — flips the entire layout for RTL languages
  * 3. Sets a CSS variable --bhasha-font — developers can use this in their CSS
- *
- * For Urdu, this automatically flips the page layout to right-to-left.
- * For Hindi/Bengali/etc, it ensures left-to-right.
  */
 function applyLangToDocument(lang: string) {
   const langInfo = getLangInfo(lang);
   const html = document.documentElement;
 
-  // Set the lang attribute — screen readers use this to pick the right voice
   html.setAttribute("lang", lang);
-
-  // Set text direction — RTL for Urdu, LTR for everything else
   html.setAttribute("dir", langInfo.dir);
-
-  // Set a CSS custom property so developers can use the font in their own CSS:
-  //   body { font-family: var(--bhasha-font); }
   html.style.setProperty("--bhasha-font", langInfo.font);
 }

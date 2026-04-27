@@ -8,10 +8,11 @@
  *   2. Adding a case in getAIProvider()
  *
  * The provider takes English UI strings + optional context,
- * and returns translations in the target language.
+ * and returns translations in the target language at the requested register.
  */
 
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import type { Register } from "../models/Translation";
 
 // ─── Interface ──────────────────────────────────────────────────
 
@@ -33,7 +34,7 @@ export interface GlossaryTerm {
 
 export interface AITranslationProvider {
   /**
-   * Translate an array of English UI strings to a target language.
+   * Translate an array of English UI strings to a target language at a specific register.
    * Optionally accepts translation memory examples and glossary terms for consistency.
    * Returns a map of { key: translatedText }.
    */
@@ -42,9 +43,34 @@ export interface AITranslationProvider {
     targetLang: string,
     targetLangName: string,
     memory?: MemoryExample[],
-    glossary?: GlossaryTerm[]
+    glossary?: GlossaryTerm[],
+    register?: Register
   ): Promise<Record<string, string>>;
 }
+
+// ─── Register style guides ──────────────────────────────────────
+//
+// These are the actual instructions handed to the model. The "casual"
+// guide explicitly invites code-mixing because that's how Gen-Z South
+// Asians type — and the moat depends on us treating that as correct,
+// not as "wrong" Hindi/Nepali/Urdu.
+
+const REGISTER_STYLE_GUIDE: Record<Register, string> = {
+  default: `Use a neutral, conversational tone appropriate for general-purpose UI strings.
+Prefer clarity over formality. Stick to the native script of the target language.`,
+
+  formal: `Use a highly formal, respectful register suitable for legal, banking, government,
+or insurance UIs. Use honorific pronouns (आप / آپ / আপনি / தாங்கள் etc.) and verb forms.
+Prefer native-language vocabulary; avoid English loanwords unless the technical term has no
+established native equivalent. Sound trustworthy and institutional.`,
+
+  casual: `Use a conversational, Gen-Z friendly tone — write like a friend, not a bureaucrat.
+Code-mixing with English is encouraged when it sounds more natural to a young urban user
+(e.g. "Order करें" instead of "आदेश दें", "Cart में add करो" instead of "टोकरी में जोड़ें").
+Use casual pronouns (तू/तुम / تم / তুমি / நீ etc.) where appropriate. Borrow common English
+nouns/verbs that are already in everyday spoken use. Keep the script of the target language
+but treat English loanwords as first-class citizens.`,
+};
 
 // ─── Gemini Provider ────────────────────────────────────────────
 
@@ -61,7 +87,8 @@ class GeminiProvider implements AITranslationProvider {
     targetLang: string,
     targetLangName: string,
     memory?: MemoryExample[],
-    glossary?: GlossaryTerm[]
+    glossary?: GlossaryTerm[],
+    register: Register = "default"
   ): Promise<Record<string, string>> {
     if (texts.length === 0) return {};
 
@@ -99,11 +126,16 @@ Follow the same tone, formality level, and terminology choices shown above.
 `;
     }
 
+    const styleGuide = REGISTER_STYLE_GUIDE[register] || REGISTER_STYLE_GUIDE.default;
+
     const prompt = `You are a professional UI translator specializing in South Asian languages.
 
-Translate the following UI strings from English to ${targetLangName} (${targetLang}).
+Translate the following UI strings from English to ${targetLangName} (${targetLang}) at the "${register}" register.
 
-RULES:
+REGISTER GUIDE for "${register}":
+${styleGuide}
+
+GENERAL RULES:
 - These are UI strings for a website/app — keep translations concise and natural
 - Preserve any {placeholder} variables exactly as-is (e.g. {name}, {count})
 - Do NOT translate placeholder variables

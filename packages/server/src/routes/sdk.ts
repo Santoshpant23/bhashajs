@@ -13,6 +13,7 @@ import { Router, Request, Response } from "express";
 import Project from "../models/Project";
 import Translation from "../models/Translation";
 import { sendSuccess, sendError } from "../utils/response";
+import { coerceRegister, readValue, DEFAULT_REGISTER } from "../utils/registers";
 
 const router = Router();
 
@@ -57,10 +58,13 @@ router.get("/project", (req: Request, res: Response) => {
 });
 
 // ─── GET TRANSLATIONS ─────────────────────────────────────────
+// Returns a flat Record<key, string> for one language at one register.
+// Backwards-compatible: callers that don't pass `register` get "default",
+// which is the same shape old SDKs (<= 0.1.x) expect.
 router.get("/translations", async (req: Request, res: Response) => {
   try {
     const project = (req as any).project;
-    const { lang } = req.query;
+    const { lang, register } = req.query;
 
     if (!lang || typeof lang !== "string") {
       return sendError(res, 400, "Query parameter 'lang' is required (e.g. ?lang=hi)");
@@ -70,11 +74,17 @@ router.get("/translations", async (req: Request, res: Response) => {
       return sendError(res, 400, `Language "${lang}" is not supported by this project`);
     }
 
+    const reg = coerceRegister(register);
     const translations = await Translation.find({ projectId: project._id });
     const flat: Record<string, string> = {};
 
     for (const t of translations) {
-      const value = t.translations?.get(lang);
+      // Try the requested register, fall back to "default" so a partially
+      // localized casual register still produces a usable bundle.
+      let value = readValue(t.translations as any, lang, reg);
+      if (!value && reg !== DEFAULT_REGISTER) {
+        value = readValue(t.translations as any, lang, DEFAULT_REGISTER);
+      }
       if (value) flat[t.key] = value;
     }
 

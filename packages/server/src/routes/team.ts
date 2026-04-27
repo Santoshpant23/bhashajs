@@ -224,7 +224,19 @@ router.post("/team/accept-invite", async (req: AuthRequest, res: Response) => {
         return sendError(res, 404, "Invalid or expired invite link");
       }
     } else if (member.status !== "active") {
-      // Live token, not yet activated — do it now.
+      // Live token, not yet activated. Before binding it to the requester, make
+      // sure the JWT user's email matches the invite's email. Otherwise a user
+      // who happens to be logged into another account in the same browser would
+      // claim someone else's invite when they click the email link.
+      const requester = await User.findById(req.userId);
+      if (!requester) return sendError(res, 401, "Invalid session");
+      if (member.email !== requester.email.toLowerCase()) {
+        return sendError(
+          res,
+          403,
+          `This invite was sent to ${member.email}. Log out and sign in with that account to accept it.`
+        );
+      }
       member.userId = req.userId as any;
       member.status = "active";
       member.inviteToken = null;

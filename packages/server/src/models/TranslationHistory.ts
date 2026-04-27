@@ -25,6 +25,7 @@ const translationHistorySchema = new Schema({
     required: true,
   },
   lang: { type: String, required: true },
+  register: { type: String, default: "default" }, // "default" | "formal" | "casual"
   key: { type: String, required: true }, // denormalized for display
   oldValue: { type: String, default: "" },
   newValue: { type: String, required: true },
@@ -38,7 +39,7 @@ const translationHistorySchema = new Schema({
 });
 
 // Per-key history sorted by time
-translationHistorySchema.index({ translationId: 1, lang: 1, createdAt: -1 });
+translationHistorySchema.index({ translationId: 1, lang: 1, register: 1, createdAt: -1 });
 // Project activity feed
 translationHistorySchema.index({ projectId: 1, createdAt: -1 });
 

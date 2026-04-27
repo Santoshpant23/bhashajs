@@ -71,7 +71,26 @@ export interface BhashaConfig {
    * Set region="IN" to use Indian formatting for Bengali speakers in India.
    */
   region?: string;
+
+  /**
+   * The register (formality / style) to render translations at.
+   *
+   *   - "default" (default) — neutral conversational tone
+   *   - "formal"            — high-formality, honorific, native-vocabulary
+   *                           preferred. Good for legal, banking, gov, insurance.
+   *   - "casual"            — Gen-Z friendly, code-mixing with English encouraged
+   *                           where natural. Good for consumer, marketing, chat.
+   *
+   * If a string is missing in the requested register, the SDK falls back to
+   * "default" before falling back through language chains.
+   */
+  register?: Register;
 }
+
+/**
+ * Register = formality / style of a translation.
+ */
+export type Register = "default" | "formal" | "casual";
 
 /**
  * The value provided by I18nContext to all child components.
@@ -87,9 +106,15 @@ export interface I18nContextValue {
   /** List of all languages this project supports */
   supportedLangs: string[];
 
+  /** The currently active register ("default" | "formal" | "casual") */
+  register: Register;
+
+  /** Switch to a different register at runtime. */
+  setRegister: (register: Register) => void;
+
   /**
    * The translation function — the most important thing in the SDK.
-   * t("hero.title") returns the translated string for the current language.
+   * t("hero.title") returns the translated string for the current language and register.
    * t("greeting", { name: "Rohan" }) does interpolation.
    * t("items_count", { count: 5 }) does pluralization (looks up items_count_one or items_count_other).
    */

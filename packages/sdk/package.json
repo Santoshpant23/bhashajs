@@ -1,6 +1,6 @@
 {
   "name": "bhasha-js",
-  "version": "0.1.0-beta.2",
+  "version": "0.2.0-beta.0",
   "description": "React i18n built for South Asian languages — Hindi, Bengali, Urdu, Tamil, Telugu, Marathi, Punjabi, Gujarati, Kannada, Malayalam, Nepali, Sinhala — with auto RTL, lakh/crore numbers, native digits, region-aware currency, and CLDR plurals.",
   "author": "Santosh",
   "license": "MIT",
