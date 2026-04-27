@@ -93,4 +93,32 @@ describe("getPluralCategory", () => {
       expect(getPluralCategory(0, "en")).toBe("other");
     });
   });
+
+  // ─── Latin-script variants inherit base-language rules ────
+
+  describe("Latin-script variants delegate to their base language", () => {
+    it("hi-Latn (Hinglish): 0 is singular — same as Hindi", () => {
+      // "0 item Hinglish mein bhi singular hi hota hai" — script doesn't change grammar.
+      expect(getPluralCategory(0, "hi-Latn")).toBe("one");
+      expect(getPluralCategory(1, "hi-Latn")).toBe("one");
+      expect(getPluralCategory(5, "hi-Latn")).toBe("other");
+    });
+
+    it("bn-Latn (Banglish): 0 is singular — same as Bengali", () => {
+      expect(getPluralCategory(0, "bn-Latn")).toBe("one");
+    });
+
+    it("pa-Latn (Roman Punjabi): 0 is singular — same as Punjabi", () => {
+      expect(getPluralCategory(0, "pa-Latn")).toBe("one");
+    });
+
+    it("ne-Latn (Roman Nepali): 0 is plural — Nepali is Group B", () => {
+      // Nepali itself treats 0 as plural even though it's Indo-Aryan.
+      expect(getPluralCategory(0, "ne-Latn")).toBe("other");
+    });
+
+    it("ur-Latn (Roman Urdu): 0 is plural — Urdu is Group B", () => {
+      expect(getPluralCategory(0, "ur-Latn")).toBe("other");
+    });
+  });
 });

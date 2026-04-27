@@ -85,6 +85,15 @@ export interface BhashaConfig {
    * "default" before falling back through language chains.
    */
   register?: Register;
+
+  /**
+   * If true, also fetch the voice bundle (IPA + SSML) on init so
+   * `formatPhonetic()` and `formatSSML()` return non-empty strings.
+   *
+   * Default: false. Most apps don't need voice data, so we don't pay the
+   * extra round-trip unless explicitly requested.
+   */
+  voice?: boolean;
 }
 
 /**
@@ -144,6 +153,21 @@ export interface I18nContextValue {
    * Defaults to DD/MM/YYYY format. Supports native digits.
    */
   formatDate: (date: Date | string | number, options?: DateFormatOptions) => string;
+
+  /**
+   * Get the IPA phonetic transcription for a key in the current (lang, register).
+   * Returns an empty string if voice data hasn't been generated for this cell.
+   * Useful for piping into custom TTS engines that prefer phonemic input.
+   */
+  formatPhonetic: (key: string) => string;
+
+  /**
+   * Get the SSML markup for a key in the current (lang, register).
+   * SSML 1.0 with `<speak xml:lang="...">` wrapper, suitable for AWS Polly,
+   * Google Cloud TTS, Azure Cognitive Services, ElevenLabs, etc.
+   * Returns an empty string if voice data hasn't been generated.
+   */
+  formatSSML: (key: string) => string;
 }
 
 /**

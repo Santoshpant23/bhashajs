@@ -194,6 +194,78 @@ export const LANGUAGES: Record<string, LangInfo> = {
     numberingSystem: "sinh",
     defaultCurrency: "LKR",
   },
+
+  // ─── Latin-script (Romanized) variants — first-class locales ──────────
+  //
+  // These are NOT "broken" Hindi/Urdu/etc. — they're how Gen-Z South Asians
+  // actually type. WhatsApp, Twitter, Discord, dating apps, casual product
+  // copy: Latin script dominates. Treating them as their own locales (with
+  // their own translation memory, plural rules, fallback chains) is the
+  // unique edge no generic i18n tool offers.
+  //
+  // Naming follows the BCP 47 convention `<lang>-Latn`. The native `name`
+  // uses the colloquial term Gen-Z users recognize ("Hinglish", "Banglish").
+
+  "hi-Latn": {
+    code: "hi-Latn",
+    name: "Hinglish",
+    englishName: "Hindi (Roman)",
+    dir: "ltr",
+    font: "Inter, sans-serif",
+    script: "Latin",
+    defaultRegion: "IN",
+    intlLocale: "hi-Latn-IN",
+    numberingSystem: "latn",
+    defaultCurrency: "INR",
+  },
+  "ne-Latn": {
+    code: "ne-Latn",
+    name: "Roman Nepali",
+    englishName: "Nepali (Roman)",
+    dir: "ltr",
+    font: "Inter, sans-serif",
+    script: "Latin",
+    defaultRegion: "NP",
+    intlLocale: "ne-Latn-NP",
+    numberingSystem: "latn",
+    defaultCurrency: "NPR",
+  },
+  "ur-Latn": {
+    code: "ur-Latn",
+    name: "Roman Urdu",
+    englishName: "Urdu (Roman)",
+    dir: "ltr",
+    font: "Inter, sans-serif",
+    script: "Latin",
+    defaultRegion: "PK",
+    intlLocale: "ur-Latn-PK",
+    numberingSystem: "latn",
+    defaultCurrency: "PKR",
+  },
+  "bn-Latn": {
+    code: "bn-Latn",
+    name: "Banglish",
+    englishName: "Bengali (Roman)",
+    dir: "ltr",
+    font: "Inter, sans-serif",
+    script: "Latin",
+    defaultRegion: "BD",
+    intlLocale: "bn-Latn-BD",
+    numberingSystem: "latn",
+    defaultCurrency: "BDT",
+  },
+  "pa-Latn": {
+    code: "pa-Latn",
+    name: "Roman Punjabi",
+    englishName: "Punjabi (Roman)",
+    dir: "ltr",
+    font: "Inter, sans-serif",
+    script: "Latin",
+    defaultRegion: "IN",
+    intlLocale: "pa-Latn-IN",
+    numberingSystem: "latn",
+    defaultCurrency: "INR",
+  },
 };
 
 /**
@@ -227,6 +299,15 @@ export const FALLBACK_CHAINS: Record<string, string[]> = {
   kn: ["kn", "en"],              // Kannada → English (Dravidian — NO Hindi fallback)
   ml: ["ml", "en"],              // Malayalam → English (Dravidian — NO Hindi fallback)
   si: ["si", "en"],              // Sinhala → English
+
+  // Latin-script chains. Key insight: script bridges harder than language
+  // family does. A Roman-Hindi reader prefers English over Devanagari Hindi
+  // because the script flip is a worse experience than the language gap.
+  "hi-Latn": ["hi-Latn", "en"],                    // Hinglish → English
+  "ne-Latn": ["ne-Latn", "hi-Latn", "en"],         // Roman Nepali → Hinglish → English (same script + close lang)
+  "ur-Latn": ["ur-Latn", "hi-Latn", "en"],         // Roman Urdu → Hinglish → English (mutually intelligible)
+  "bn-Latn": ["bn-Latn", "en"],                    // Banglish → English (Bengali doesn't bridge to Hindi well in Latin)
+  "pa-Latn": ["pa-Latn", "hi-Latn", "en"],         // Roman Punjabi → Hinglish → English
 };
 
 /**

@@ -94,4 +94,46 @@ router.get("/translations", async (req: Request, res: Response) => {
   }
 });
 
+// ─── GET VOICE BUNDLE ─────────────────────────────────────────
+// Returns Record<key, { ipa, ssml }> for one (lang, register).
+// Same as /sdk/translations in shape — the client can decide whether to
+// fetch this lazily (only when entering voice mode) or eagerly.
+router.get("/voice", async (req: Request, res: Response) => {
+  try {
+    const project = (req as any).project;
+    const { lang, register } = req.query;
+
+    if (!lang || typeof lang !== "string") {
+      return sendError(res, 400, "Query parameter 'lang' is required");
+    }
+
+    if (!project.supportedLanguages.includes(lang)) {
+      return sendError(res, 400, `Language "${lang}" is not supported by this project`);
+    }
+
+    const reg = coerceRegister(register);
+    const translations = await Translation.find({ projectId: project._id });
+    const flat: Record<string, { ipa: string; ssml: string }> = {};
+
+    for (const t of translations) {
+      const voiceField = (t as any).voice;
+      const langMap = voiceField instanceof Map ? voiceField.get(lang) : voiceField?.[lang];
+      let cell = langMap instanceof Map ? langMap.get(reg) : langMap?.[reg];
+      // Fall back to default register's voice data if requested register is empty.
+      if ((!cell || !cell.ipa) && reg !== DEFAULT_REGISTER) {
+        cell = langMap instanceof Map
+          ? langMap.get(DEFAULT_REGISTER)
+          : langMap?.[DEFAULT_REGISTER];
+      }
+      if (cell && (cell.ipa || cell.ssml)) {
+        flat[t.key] = { ipa: cell.ipa || "", ssml: cell.ssml || "" };
+      }
+    }
+
+    return sendSuccess(res, 200, flat);
+  } catch (e) {
+    return sendError(res, 500, "Failed to fetch voice bundle");
+  }
+});
+
 export default router;

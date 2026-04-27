@@ -28,6 +28,10 @@
 /**
  * Languages where BOTH 0 and 1 are treated as singular ("one").
  * This is the South Asian plural rule that most tools get wrong.
+ *
+ * Latin-script variants (hi-Latn, bn-Latn, pa-Latn) inherit from their base
+ * language — switching scripts doesn't change grammatical number rules. The
+ * `getPluralCategory` function strips the `-Latn` suffix before lookup.
  */
 const ZERO_AND_ONE_SINGULAR = new Set([
   "hi",     // Hindi
@@ -39,6 +43,15 @@ const ZERO_AND_ONE_SINGULAR = new Set([
   "pa",     // Punjabi (Gurmukhi)
   "pa-PK",  // Punjabi (Shahmukhi)
 ]);
+
+/**
+ * Map a locale code to its base language for plural-rule lookup.
+ * `hi-Latn` → `hi`. `pa-PK` is intentionally NOT stripped because it's a
+ * full locale (different script), not a romanization.
+ */
+function baseLangForPlurals(lang: string): string {
+  return lang.endsWith("-Latn") ? lang.slice(0, -5) : lang;
+}
 
 /**
  * Get the CLDR plural category for a number in a given language.
@@ -61,8 +74,9 @@ export function getPluralCategory(
 ): "one" | "other" {
   // Use the absolute value for negative numbers
   const n = Math.abs(count);
+  const base = baseLangForPlurals(lang);
 
-  if (ZERO_AND_ONE_SINGULAR.has(lang)) {
+  if (ZERO_AND_ONE_SINGULAR.has(base)) {
     // Group A: 0 and 1 are singular
     return n >= 0 && n <= 1 ? "one" : "other";
   }

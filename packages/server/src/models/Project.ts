@@ -23,6 +23,11 @@ const projectSchema = new Schema({
     unique: true,
     default: () => `bjs_${crypto.randomBytes(24).toString("hex")}`,
   },
+  // Optional vertical tag — when set, the AI translator picks up
+  // vertical-specific terminology (e.g. "fintech" → use RBI/SEBI phrasing).
+  // Allowed values are advisory; the field is a free-form string so we can
+  // add new verticals without a schema migration.
+  vertical: { type: String, default: null },
   createdAt: { type: Date, default: Date.now },
 });
 

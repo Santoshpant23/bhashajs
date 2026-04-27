@@ -1454,6 +1454,201 @@ body {
   color: var(--text-muted);
 }
 
+/* ─── Voice Mode ──────────────────────────────────────── */
+/* When voice mode is on, each translation cell renders an IPA preview row
+   beneath it, and a top-level voice-bar offers per-language generation. */
+.voice-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  background: rgba(168, 85, 247, 0.06);
+  border: 1px solid rgba(168, 85, 247, 0.25);
+  border-radius: 8px;
+}
+.voice-bar-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.voice-gen-btn {
+  padding: 0.3rem 0.7rem;
+  background: var(--bg-input);
+  border: 1px solid rgba(168, 85, 247, 0.4);
+  border-radius: 100px;
+  color: #c4b5fd;
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.voice-gen-btn:hover:not(:disabled) {
+  background: rgba(168, 85, 247, 0.15);
+  border-color: #a855f7;
+}
+.voice-gen-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.voice-bar-status {
+  margin-left: auto;
+  color: #c4b5fd;
+  font-size: 0.78rem;
+  font-style: italic;
+}
+.voice-row {
+  margin-top: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  font-family: 'SF Mono', 'Consolas', monospace;
+  font-size: 0.72rem;
+  color: #c4b5fd;
+  background: rgba(168, 85, 247, 0.06);
+  border-radius: 4px;
+  word-break: break-word;
+}
+.voice-row.voice-empty {
+  color: var(--text-muted);
+  font-style: italic;
+  background: transparent;
+}
+
+/* ─── Vertical Packs ──────────────────────────────────── */
+/* Catalog UI for regulator-pinned translation packs. Each pack is a card
+   with badges for regulator + jurisdiction and a clear "sample" warning. */
+.packs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.pack-card {
+  padding: 1rem;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.pack-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+  flex-wrap: wrap;
+}
+.pack-name {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.pack-badges {
+  display: inline-flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.pack-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem 0.55rem;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+.pack-badge-regulator {
+  background: rgba(59, 130, 246, 0.12);
+  border-color: rgba(59, 130, 246, 0.45);
+  color: #60a5fa;
+}
+.pack-badge-sample {
+  background: rgba(234, 179, 8, 0.12);
+  border-color: rgba(234, 179, 8, 0.45);
+  color: #fbbf24;
+}
+.pack-description {
+  margin: 0 0 0.6rem;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+.pack-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 0.6rem;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+.pack-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+.vertical-select {
+  width: 100%;
+}
+
+/* ─── Register Bar ──────────────────────────────────── */
+/* Three-tab pill-group above the filter bar. Drives which register slice
+   the editor reads, and which register saves/AI/import target. */
+.register-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  background: rgba(224, 122, 58, 0.04);
+  border: 1px solid rgba(224, 122, 58, 0.18);
+  border-radius: 8px;
+}
+.register-bar-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.register-tabs {
+  display: inline-flex;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 100px;
+  padding: 2px;
+  gap: 2px;
+}
+.register-tab {
+  padding: 0.3rem 0.85rem;
+  border-radius: 100px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.register-tab:hover { color: var(--text-primary); }
+.register-tab.active {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 1px 4px rgba(224, 122, 58, 0.35);
+}
+.register-hint {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
 /* ─── Filter Bar ────────────────────────────────────── */
 .filter-bar {
   display: flex;

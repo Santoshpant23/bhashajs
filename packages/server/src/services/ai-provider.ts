@@ -32,6 +32,16 @@ export interface GlossaryTerm {
   translation: string;
 }
 
+export interface VoiceInput {
+  key: string;
+  text: string;
+}
+
+export interface VoiceOutput {
+  ipa: string;
+  ssml: string;
+}
+
 export interface AITranslationProvider {
   /**
    * Translate an array of English UI strings to a target language at a specific register.
@@ -44,9 +54,58 @@ export interface AITranslationProvider {
     targetLangName: string,
     memory?: MemoryExample[],
     glossary?: GlossaryTerm[],
-    register?: Register
+    register?: Register,
+    vertical?: string | null
   ): Promise<Record<string, string>>;
+
+  /**
+   * Generate voice-ready outputs (IPA phonetic transcription + SSML markup)
+   * for translated UI strings. Used to stitch the screen layer to the voice
+   * layer so a customer's TTS pipeline can reuse the same i18n keys.
+   *
+   * Returns a map of { key: { ipa, ssml } }.
+   */
+  generateVoice(
+    inputs: VoiceInput[],
+    lang: string,
+    langName: string,
+    register?: Register
+  ): Promise<Record<string, VoiceOutput>>;
 }
+
+// ─── Vertical-specific prompt addenda ──────────────────────────
+//
+// When a project tags itself with a vertical (e.g. "fintech"), we splice a
+// short domain note into the prompt. This isn't a substitute for legal
+// review — the regulator-pinned vertical packs do the heavy lifting — but
+// it nudges the model toward the correct register of jargon.
+
+const VERTICAL_GUIDE: Record<string, string> = {
+  fintech:
+    "Domain: Indian fintech / banking. Use formal banking terminology where " +
+    "applicable (KYC, OTP, IFSC, UPI, FATCA). Match the formality of RBI-supervised " +
+    "consumer apps. When translating money-related terms, prefer the Indian " +
+    "lakh/crore convention over the Western million/billion.",
+  insurance:
+    "Domain: Indian insurance (IRDAI-regulated). Use formal insurance terminology " +
+    "(policy holder, sum assured, premium, beneficiary, nominee, claim, settlement, " +
+    "endorsement, surrender, lapse). Tone is institutional and trust-building.",
+  health:
+    "Domain: Indian healthcare / pharma. Be explicit about consent and data use. " +
+    "Prefer plain-language patient-friendly phrasing over medical jargon when both work.",
+  ecommerce:
+    "Domain: South Asian consumer e-commerce. Tone is friendly and conversion-oriented. " +
+    "Use familiar shopping vocabulary (cart, order, delivery, payment, refund, return). " +
+    "When the register is 'casual', code-mixing with English is expected and natural.",
+  gov:
+    "Domain: government / public-sector UI. Use formal, neutral language. Avoid " +
+    "colloquialisms. Defer to official Sanskritized vocabulary in Hindi over " +
+    "Persian-derived alternatives.",
+  edtech:
+    "Domain: South Asian education tech. Audience is students and parents. Use " +
+    "encouraging, clear language. Where the register is 'casual', match the way " +
+    "students text — code-mixing is fine.",
+};
 
 // ─── Register style guides ──────────────────────────────────────
 //
@@ -88,7 +147,8 @@ class GeminiProvider implements AITranslationProvider {
     targetLangName: string,
     memory?: MemoryExample[],
     glossary?: GlossaryTerm[],
-    register: Register = "default"
+    register: Register = "default",
+    vertical?: string | null
   ): Promise<Record<string, string>> {
     if (texts.length === 0) return {};
 
@@ -127,6 +187,23 @@ Follow the same tone, formality level, and terminology choices shown above.
     }
 
     const styleGuide = REGISTER_STYLE_GUIDE[register] || REGISTER_STYLE_GUIDE.default;
+    const verticalGuide = vertical && VERTICAL_GUIDE[vertical] ? VERTICAL_GUIDE[vertical] : "";
+    const verticalSection = verticalGuide ? `\nDOMAIN GUIDE:\n${verticalGuide}\n` : "";
+
+    // Latin-script variants get an explicit Romanization rule. Without this,
+    // Gemini happily "helps" by producing Devanagari/Bengali/etc. — defeating
+    // the entire point of code-mixed locales.
+    const isLatinScript = targetLang.endsWith("-Latn");
+    const scriptInstruction = isLatinScript
+      ? `\nSCRIPT REQUIREMENT (CRITICAL):
+- Output MUST be in the Latin alphabet (a–z, A–Z) only.
+- Do NOT use Devanagari, Bengali, Gurmukhi, Arabic, or any non-Latin script.
+- Romanize using common informal conventions Gen-Z South Asians actually type
+  (e.g. "kar do" not "kara do", "kaisa hai" not "kaisaa haiy"). Match how
+  people text on WhatsApp, not academic IAST/ISO 15919 transliteration.
+- For "casual" register specifically, freely mix English words where they
+  flow naturally — that's the whole point of Hinglish/Banglish/Roman Urdu.\n`
+      : "";
 
     const prompt = `You are a professional UI translator specializing in South Asian languages.
 
@@ -134,7 +211,7 @@ Translate the following UI strings from English to ${targetLangName} (${targetLa
 
 REGISTER GUIDE for "${register}":
 ${styleGuide}
-
+${scriptInstruction}${verticalSection}
 GENERAL RULES:
 - These are UI strings for a website/app — keep translations concise and natural
 - Preserve any {placeholder} variables exactly as-is (e.g. {name}, {count})
@@ -176,6 +253,71 @@ Return JSON in this exact format:
     } catch (error: any) {
       console.error("[BhashaJS AI] Gemini translation failed:", error.message);
       throw new Error(`AI translation failed: ${error.message}`);
+    }
+  }
+
+  async generateVoice(
+    inputs: VoiceInput[],
+    lang: string,
+    langName: string,
+    register: Register = "default"
+  ): Promise<Record<string, VoiceOutput>> {
+    if (inputs.length === 0) return {};
+
+    const items = inputs.map((i) => `"${i.key}": "${i.text}"`).join("\n");
+
+    // The SSML guidance is intentionally pragmatic — production TTS engines
+    // (AWS Polly, Google Cloud TTS, Azure, ElevenLabs) all consume SSML 1.0,
+    // so we keep markup to the conservative subset they share. Customers
+    // who want richer prosody can post-process.
+    const prompt = `You are a phonetics + speech-synthesis expert specializing in South Asian languages.
+
+For each UI string in ${langName} (${lang}) at the "${register}" register, produce two outputs:
+
+1. **IPA**: International Phonetic Alphabet transcription. Use broad transcription
+   (phonemic, not narrow). Mark word boundaries with spaces. For Hindi/Marathi/Nepali
+   use Devanagari→IPA conventions; for Bengali use Bengali→IPA; for Tamil/Telugu/
+   Kannada/Malayalam use Dravidian→IPA. For Latin-script variants (e.g. Hinglish,
+   Roman Nepali), still emit IPA based on how the text is meant to be pronounced
+   in spoken Hindi/Nepali/etc., NOT how an English speaker would read the Latin letters.
+
+2. **SSML**: SSML 1.0 markup wrapped in <speak> tags. Add minimal helpful hints —
+   <break time="200ms"/> between sentences if natural, <emphasis> for important
+   nouns, and a top-level xml:lang="${lang}" attribute. Do NOT use vendor-specific
+   extensions (no <amazon:*>, no <google:*>). Keep the SSML readable and small.
+
+RULES:
+- Preserve any {placeholder} variables exactly as text in both outputs
+  (a TTS engine will substitute them at render time).
+- Return ONLY valid JSON — no markdown, no code blocks, no prose.
+- The JSON shape must be exactly:
+  { "<key>": { "ipa": "...", "ssml": "<speak xml:lang=\\"${lang}\\">...</speak>" } }
+
+STRINGS:
+${items}`;
+
+    try {
+      const result = await this.model.generateContent(prompt);
+      const response = result.response.text();
+      const jsonStr = response.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+      const parsed = JSON.parse(jsonStr);
+
+      const output: Record<string, VoiceOutput> = {};
+      for (const i of inputs) {
+        const cell = parsed[i.key];
+        if (
+          cell &&
+          typeof cell === "object" &&
+          typeof cell.ipa === "string" &&
+          typeof cell.ssml === "string"
+        ) {
+          output[i.key] = { ipa: cell.ipa, ssml: cell.ssml };
+        }
+      }
+      return output;
+    } catch (error: any) {
+      console.error("[BhashaJS AI] Voice generation failed:", error.message);
+      throw new Error(`Voice generation failed: ${error.message}`);
     }
   }
 }

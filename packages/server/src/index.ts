@@ -19,7 +19,9 @@ import notificationRoutes from "./routes/notifications";
 import commentRoutes from "./routes/comments";
 import glossaryRoutes from "./routes/glossary";
 import sdkRoutes from "./routes/sdk";
+import packRoutes from "./routes/packs";
 import { migrateRegisters } from "./utils/migrateRegisters";
+import { seedVerticalPacks } from "./utils/seedPacks";
 
 dotenv.config();
 
@@ -95,6 +97,7 @@ app.use("/api", teamRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/translations", commentRoutes);
 app.use("/api/projects/:projectId/glossary", glossaryRoutes);
+app.use("/api", packRoutes);
 
 // ─── Migration: Ensure existing projects have owner membership ──
 async function migrateOwnerMemberships() {
@@ -139,6 +142,7 @@ async function start() {
     // Run one-time migrations (idempotent)
     await migrateOwnerMemberships();
     await migrateRegisters();
+    await seedVerticalPacks();
 
     const port = process.env.PORT || 5000;
     app.listen(port, () => {

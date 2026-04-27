@@ -33,6 +33,17 @@ export function isValidRegister(r: any): r is Register {
   return typeof r === "string" && (REGISTERS as readonly string[]).includes(r);
 }
 
+// Voice data cell — one per (lang, register). IPA is the phonetic
+// transcription; SSML is full-fidelity markup including prosody/pause hints
+// suitable for piping into a TTS engine.
+const voiceCellSchema = new Schema(
+  {
+    ipa: { type: String, default: "" },
+    ssml: { type: String, default: "" },
+  },
+  { _id: false }
+);
+
 const translationSchema = new Schema({
   projectId: {
     type: Schema.Types.ObjectId,
@@ -57,6 +68,18 @@ const translationSchema = new Schema({
     of: {
       type: Map,
       of: String,
+    },
+    default: {},
+  },
+  // Voice-ready outputs — IPA phonetic transcription + SSML markup per
+  // (lang, register). Missing entries are generated lazily via the
+  // generate-voice endpoint; the SDK falls back to the plain translation
+  // when voice data isn't present.
+  voice: {
+    type: Map,
+    of: {
+      type: Map,
+      of: voiceCellSchema,
     },
     default: {},
   },

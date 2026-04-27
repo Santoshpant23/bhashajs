@@ -12,15 +12,49 @@ describe("LANGUAGES database", () => {
   const expectedLangs = [
     "en", "hi", "bn", "ur", "ta", "te", "mr", "ne", "pa", "pa-PK", "gu", "kn", "ml", "si",
   ];
+  const expectedLatnVariants = ["hi-Latn", "ne-Latn", "ur-Latn", "bn-Latn", "pa-Latn"];
 
-  it("has 14 entries (13 languages, pa has 2 scripts)", () => {
-    expect(Object.keys(LANGUAGES)).toHaveLength(14);
+  it("has 19 entries (14 native-script + 5 Latin-script variants)", () => {
+    expect(Object.keys(LANGUAGES)).toHaveLength(14 + expectedLatnVariants.length);
   });
 
   it("contains all expected language codes", () => {
     for (const code of expectedLangs) {
       expect(LANGUAGES[code]).toBeDefined();
     }
+  });
+
+  it("contains all Latin-script variants", () => {
+    for (const code of expectedLatnVariants) {
+      expect(LANGUAGES[code]).toBeDefined();
+    }
+  });
+
+  describe("Latin-script variants", () => {
+    it("all use Latin script and LTR direction", () => {
+      for (const code of expectedLatnVariants) {
+        expect(LANGUAGES[code].script).toBe("Latin");
+        expect(LANGUAGES[code].dir).toBe("ltr");
+      }
+    });
+
+    it("Roman Urdu is LTR even though base Urdu is RTL", () => {
+      expect(LANGUAGES.ur.dir).toBe("rtl");
+      expect(LANGUAGES["ur-Latn"].dir).toBe("ltr");
+    });
+
+    it("inherit currency from their base language", () => {
+      expect(LANGUAGES["hi-Latn"].defaultCurrency).toBe("INR");
+      expect(LANGUAGES["ne-Latn"].defaultCurrency).toBe("NPR");
+      expect(LANGUAGES["ur-Latn"].defaultCurrency).toBe("PKR");
+      expect(LANGUAGES["bn-Latn"].defaultCurrency).toBe("BDT");
+    });
+
+    it("use the Latin numbering system", () => {
+      for (const code of expectedLatnVariants) {
+        expect(LANGUAGES[code].numberingSystem).toBe("latn");
+      }
+    });
   });
 
   describe("every entry has all required fields", () => {
@@ -128,6 +162,28 @@ describe("FALLBACK_CHAINS", () => {
     for (const [lang, chain] of Object.entries(FALLBACK_CHAINS)) {
       expect(chain[0]).toBe(lang);
     }
+  });
+
+  describe("Latin-script chains", () => {
+    it("Hinglish does NOT fall back to Devanagari Hindi", () => {
+      // Script bridges harder than language family. A Roman-Hindi reader
+      // hitting Devanagari is a worse experience than seeing English.
+      expect(FALLBACK_CHAINS["hi-Latn"]).not.toContain("hi");
+      expect(FALLBACK_CHAINS["hi-Latn"]).toEqual(["hi-Latn", "en"]);
+    });
+
+    it("Roman Nepali falls back to Hinglish (same script + close lang) before English", () => {
+      expect(FALLBACK_CHAINS["ne-Latn"]).toEqual(["ne-Latn", "hi-Latn", "en"]);
+    });
+
+    it("Roman Urdu falls back to Hinglish (mutually intelligible)", () => {
+      expect(FALLBACK_CHAINS["ur-Latn"]).toEqual(["ur-Latn", "hi-Latn", "en"]);
+    });
+
+    it("Banglish does NOT fall back to Hinglish (Bengali doesn't bridge to Hindi well)", () => {
+      expect(FALLBACK_CHAINS["bn-Latn"]).not.toContain("hi-Latn");
+      expect(FALLBACK_CHAINS["bn-Latn"]).toEqual(["bn-Latn", "en"]);
+    });
   });
 });
 

@@ -140,7 +140,7 @@ router.put(
   async (req: ProjectAuthRequest, res: Response) => {
     try {
       const { id } = req.params;
-      const { name, defaultLanguage, supportedLanguages } = req.body;
+      const { name, defaultLanguage, supportedLanguages, vertical } = req.body;
 
       const idError = validateObjectId(id as string, "Project ID");
       if (idError) return sendError(res, 400, idError);
@@ -166,6 +166,12 @@ router.put(
 
       if (defaultLanguage !== undefined) {
         updateFields.defaultLanguage = defaultLanguage;
+      }
+
+      // `vertical` is optional and free-form. Empty string or null clears it.
+      if (vertical !== undefined) {
+        updateFields.vertical =
+          typeof vertical === "string" && vertical.trim() ? vertical.trim() : null;
       }
 
       const project = await Project.findByIdAndUpdate(id, updateFields, {

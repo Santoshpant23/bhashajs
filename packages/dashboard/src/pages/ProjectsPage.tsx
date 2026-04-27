@@ -33,9 +33,22 @@ interface Project {
   defaultLanguage: string;
   supportedLanguages: string[];
   apiKey?: string;
+  vertical?: string | null;
   createdAt: string;
   myRole?: string; // "owner" | "translator" | "viewer"
 }
+
+// Vertical options shown in project settings. The values match the keys in
+// the server-side VERTICAL_GUIDE (services/ai-provider.ts) — keep in sync.
+const VERTICAL_OPTIONS: { value: string; label: string; hint: string }[] = [
+  { value: "", label: "None", hint: "No domain bias — translations stay generic" },
+  { value: "fintech", label: "Fintech / Banking", hint: "RBI / SBP / Bangladesh Bank tone, KYC vocabulary" },
+  { value: "insurance", label: "Insurance", hint: "IRDAI tone, formal policy-holder language" },
+  { value: "health", label: "Health / Pharma", hint: "Patient-friendly, consent-explicit phrasing" },
+  { value: "ecommerce", label: "E-commerce", hint: "Conversion-friendly, casual register encouraged" },
+  { value: "gov", label: "Government", hint: "Formal, neutral, official vocabulary" },
+  { value: "edtech", label: "EdTech", hint: "Student-friendly, encouraging, clear" },
+];
 
 interface TeamMember {
   _id: string;
@@ -47,7 +60,8 @@ interface TeamMember {
   invitedBy?: { name: string };
 }
 
-// Language code → display name mapping for South Asian languages
+// Language code → display name mapping for South Asian languages.
+// Native scripts first, then Latin-script (Romanized) variants.
 const LANG_NAMES: Record<string, string> = {
   en: "English",
   hi: "हिन्दी",
@@ -63,6 +77,12 @@ const LANG_NAMES: Record<string, string> = {
   kn: "ಕನ್ನಡ",
   ml: "മലയാളം",
   si: "සිංහල",
+  // Latin-script variants
+  "hi-Latn": "Hinglish",
+  "ne-Latn": "Roman Nepali",
+  "ur-Latn": "Roman Urdu",
+  "bn-Latn": "Banglish",
+  "pa-Latn": "Roman Punjabi",
 };
 
 export default function ProjectsPage() {
@@ -81,6 +101,7 @@ export default function ProjectsPage() {
   const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [editName, setEditName] = useState("");
   const [editLangs, setEditLangs] = useState<string[]>([]);
+  const [editVertical, setEditVertical] = useState<string>("");
 
   // Team management state
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
@@ -147,6 +168,7 @@ export default function ProjectsPage() {
     setEditingProject(project);
     setEditName(project.name);
     setEditLangs([...project.supportedLanguages]);
+    setEditVertical(project.vertical || "");
     setSettingsTab("settings");
     setShowSettings(true);
     setInviteLink(null);
@@ -162,6 +184,7 @@ export default function ProjectsPage() {
       await api.put(`/projects/${editingProject._id}`, {
         name: editName,
         supportedLanguages: editLangs,
+        vertical: editVertical, // empty string clears the tag server-side
       });
       setShowSettings(false);
       setEditingProject(null);
@@ -394,6 +417,24 @@ export default function ProjectsPage() {
                         </button>
                       ))}
                     </div>
+                  </div>
+                  <div className="form-group">
+                    <label>Vertical / Domain</label>
+                    <select
+                      value={editVertical}
+                      onChange={(e) => setEditVertical(e.target.value)}
+                      className="vertical-select"
+                    >
+                      {VERTICAL_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="form-hint">
+                      {VERTICAL_OPTIONS.find((o) => o.value === editVertical)?.hint ||
+                        "Tagging your project gives the AI translator domain-specific guidance and unlocks the matching vertical packs."}
+                    </span>
                   </div>
                   <div className="modal-actions">
                     <button className="btn-ghost" onClick={() => setShowSettings(false)}>Cancel</button>

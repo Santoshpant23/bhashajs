@@ -53,6 +53,7 @@ export function I18nProvider({
   onLanguageChange,
   region,
   register: initialRegister = DEFAULT_REGISTER,
+  voice: voiceEnabled = false,
   children,
 }: I18nProviderProps) {
   // ─── State ───────────────────────────────────────────────────
@@ -112,6 +113,15 @@ export function I18nProvider({
         // for the current lang so register-fallback is instant.
         if (currentRegister !== DEFAULT_REGISTER) {
           await client.fetchTranslations(defaultLang, DEFAULT_REGISTER);
+        }
+
+        // Voice mode: also fetch the IPA/SSML bundle so formatPhonetic and
+        // formatSSML can return non-empty strings synchronously.
+        if (voiceEnabled) {
+          await client.fetchVoice(defaultLang, currentRegister);
+          if (currentRegister !== DEFAULT_REGISTER) {
+            await client.fetchVoice(defaultLang, DEFAULT_REGISTER);
+          }
         }
 
         preloadFonts(client.getSupportedLangs());
@@ -202,6 +212,25 @@ export function I18nProvider({
     [currentLang, region]
   );
 
+  // ─── Voice helpers ───────────────────────────────────────────
+  // Walk the same fallback chain as t() — register-then-language. Return
+  // empty strings if the bundle hasn't been loaded; the developer can
+  // enable voice mode by passing `voice` on the provider.
+
+  const formatPhonetic = useCallback(
+    (key: string): string => {
+      return client.getVoice(key, currentLang, currentRegister)?.ipa || "";
+    },
+    [currentLang, currentRegister, client]
+  );
+
+  const formatSSML = useCallback(
+    (key: string): string => {
+      return client.getVoice(key, currentLang, currentRegister)?.ssml || "";
+    },
+    [currentLang, currentRegister, client]
+  );
+
   // ─── Provide everything to children ──────────────────────────
 
   const contextValue = {
@@ -216,6 +245,8 @@ export function I18nProvider({
     formatNumber,
     formatCurrency,
     formatDate,
+    formatPhonetic,
+    formatSSML,
   };
 
   return (

@@ -31,7 +31,7 @@ import Notification from "../models/Notification";
 import Project from "../models/Project";
 import { sendSuccess, sendError } from "../utils/response";
 import { validateRequired, validateObjectId } from "../utils/validate";
-import { getAIProvider, TranslationInput, MemoryExample, GlossaryTerm } from "../services/ai-provider";
+import { getAIProvider, TranslationInput, MemoryExample, GlossaryTerm, VoiceInput } from "../services/ai-provider";
 import GlossaryEntry from "../models/GlossaryEntry";
 import {
   coerceRegister,
@@ -646,6 +646,14 @@ router.post(
         hi: "Hindi", bn: "Bengali", ur: "Urdu", ta: "Tamil", te: "Telugu",
         mr: "Marathi", ne: "Nepali", pa: "Punjabi (Gurmukhi)", "pa-PK": "Punjabi (Shahmukhi)",
         gu: "Gujarati", kn: "Kannada", ml: "Malayalam", si: "Sinhala",
+        // Latin-script variants — output stays in Latin script, not native script.
+        // The AI prompt is explicit about this so Gemini doesn't "helpfully" produce
+        // Devanagari instead of Romanized Hindi.
+        "hi-Latn": "Hindi in Latin script (Hinglish)",
+        "ne-Latn": "Nepali in Latin script (Roman Nepali)",
+        "ur-Latn": "Urdu in Latin script (Roman Urdu)",
+        "bn-Latn": "Bengali in Latin script (Banglish)",
+        "pa-Latn": "Punjabi in Latin script (Roman Punjabi)",
       };
 
       const inputs: TranslationInput[] = toTranslate.map((t) => ({
@@ -685,7 +693,8 @@ router.post(
         targetLangName,
         memory,
         glossary,
-        targetRegister
+        targetRegister,
+        (project as any).vertical || null
       );
 
       const translatedKeys: string[] = [];
@@ -889,5 +898,119 @@ router.delete("/memory/:id", async (req: AuthRequest, res: Response) => {
     return sendError(res, 500, "Failed to delete memory entry");
   }
 });
+
+// ─── GENERATE VOICE-READY OUTPUTS (IPA + SSML) ───────────────
+//
+// For each translation in the project at (lang, register), produce IPA
+// phonetic transcription + SSML markup. Skips cells that already have voice
+// data unless `overwrite: true` is passed. Skips cells with no translation
+// (nothing to transcribe).
+//
+// Reading the SDK voice bundle is via GET /api/sdk/voice (no JWT, API key).
+router.post(
+  "/:projectId/generate-voice",
+  requireProjectRole("owner", "translator"),
+  async (req: ProjectAuthRequest, res: Response) => {
+    try {
+      const { projectId } = req.params;
+      const { lang, keys, overwrite } = req.body;
+      const register = coerceRegister(req.body.register);
+
+      const idError = validateObjectId(projectId as string, "Project ID");
+      if (idError) return sendError(res, 400, idError);
+
+      const langError = validateRequired(lang, "Language code");
+      if (langError) return sendError(res, 400, langError);
+
+      // Translator language restriction
+      if (req.membership?.role === "translator") {
+        if (!req.membership.assignedLanguages.includes(lang)) {
+          return sendError(res, 403, `You are not assigned to translate "${lang}"`);
+        }
+      }
+
+      const project = await Project.findById(projectId);
+      if (!project) return sendError(res, 404, "Project not found");
+      if (!project.supportedLanguages.includes(lang)) {
+        return sendError(res, 400, `"${lang}" is not a supported language for this project`);
+      }
+
+      const allTranslations = await Translation.find({ projectId });
+
+      // Pick rows that have a translation in (lang, register) and are missing
+      // voice data (unless overwrite is set). If `keys` is supplied, restrict
+      // to that subset so the dashboard can fire targeted re-generations.
+      let candidates = allTranslations.filter((t) => {
+        const text = readValue(t.translations as any, lang, register);
+        if (!text || !text.trim()) return false;
+        if (overwrite) return true;
+        const voiceMap = (t as any).voice;
+        const langMap = voiceMap instanceof Map ? voiceMap.get(lang) : voiceMap?.[lang];
+        const cell = langMap instanceof Map ? langMap.get(register) : langMap?.[register];
+        return !cell || !cell.ipa;
+      });
+
+      if (keys && Array.isArray(keys) && keys.length > 0) {
+        const keySet = new Set(keys);
+        candidates = candidates.filter((t) => keySet.has(t.key));
+      }
+
+      if (candidates.length === 0) {
+        return sendSuccess(res, 200, {
+          message: "No keys need voice data — all are already generated",
+          generated: 0,
+          keys: [],
+        });
+      }
+
+      const langNames: Record<string, string> = {
+        hi: "Hindi", bn: "Bengali", ur: "Urdu", ta: "Tamil", te: "Telugu",
+        mr: "Marathi", ne: "Nepali", pa: "Punjabi (Gurmukhi)", "pa-PK": "Punjabi (Shahmukhi)",
+        gu: "Gujarati", kn: "Kannada", ml: "Malayalam", si: "Sinhala", en: "English",
+        "hi-Latn": "Hindi (Latin script)", "ne-Latn": "Nepali (Latin script)",
+        "ur-Latn": "Urdu (Latin script)", "bn-Latn": "Bengali (Latin script)",
+        "pa-Latn": "Punjabi (Latin script)",
+      };
+
+      const inputs: VoiceInput[] = candidates.map((t) => ({
+        key: t.key,
+        text: readValue(t.translations as any, lang, register)!,
+      }));
+
+      const aiProvider = getAIProvider();
+      const langName = langNames[lang] || lang;
+      const aiResults = await aiProvider.generateVoice(inputs, lang, langName, register);
+
+      const generatedKeys: string[] = [];
+      for (const t of candidates) {
+        const result = aiResults[t.key];
+        if (!result) continue;
+
+        // Write into the nested voice Map: voice[lang][register] = { ipa, ssml }
+        const voiceField = (t as any).voice as Map<string, Map<string, any>>;
+        let langMap = voiceField.get(lang);
+        if (!langMap) {
+          langMap = new Map();
+          voiceField.set(lang, langMap);
+        }
+        langMap.set(register, { ipa: result.ipa, ssml: result.ssml });
+        t.markModified("voice");
+        t.updatedAt = new Date();
+        await t.save();
+        generatedKeys.push(t.key);
+      }
+
+      return sendSuccess(res, 200, {
+        message: `Generated voice data for ${generatedKeys.length} key(s) in ${langName} (${register})`,
+        generated: generatedKeys.length,
+        register,
+        keys: generatedKeys,
+      });
+    } catch (e: any) {
+      console.error("[BhashaJS] Voice generation error:", e?.message);
+      return sendError(res, 500, e?.message || "Voice generation failed");
+    }
+  }
+);
 
 export default router;

@@ -47,11 +47,22 @@ export class TranslationClient {
   private cache: Record<string, Record<string, string>> = {};
 
   /**
+   * Voice cache, parallel to `cache` but per-(lang, register, key) holding
+   * { ipa, ssml }. Populated lazily by `fetchVoice` — populated only when
+   * the developer enables voice mode or calls `formatPhonetic` / `formatSSML`
+   * before the first paint.
+   */
+  private voiceCache: Record<string, Record<string, { ipa: string; ssml: string }>> = {};
+
+  /**
    * Tracks which (lang, register) bundles are currently being fetched.
    * Prevents duplicate API calls if a component renders twice
    * before the first fetch completes (React Strict Mode does this).
    */
   private fetchPromises: Record<string, Promise<Record<string, string>>> = {};
+
+  /** In-flight voice-bundle fetches, indexed the same way as fetchPromises. */
+  private voiceFetchPromises: Record<string, Promise<Record<string, { ipa: string; ssml: string }>>> = {};
 
   /** List of supported languages, fetched from the project endpoint */
   private supportedLangs: string[] = [];
@@ -184,6 +195,94 @@ export class TranslationClient {
     this.fetchPromises[cacheKey] = fetchPromise;
 
     return fetchPromise;
+  }
+
+  /**
+   * Fetch the voice bundle for a (lang, register). Same auth model as
+   * `fetchTranslations`, separate endpoint. Cached so future calls are
+   * instant. Errors propagate so the provider can expose them.
+   */
+  async fetchVoice(
+    lang: string,
+    register: Register = DEFAULT_REGISTER
+  ): Promise<Record<string, { ipa: string; ssml: string }>> {
+    const cacheKey = bundleKey(lang, register);
+    if (this.voiceCache[cacheKey]) return this.voiceCache[cacheKey];
+    if (cacheKey in this.voiceFetchPromises) return this.voiceFetchPromises[cacheKey];
+
+    const fetchPromise = (async () => {
+      try {
+        const params = `lang=${encodeURIComponent(lang)}&register=${encodeURIComponent(register)}`;
+        const url = this.usePublicEndpoints
+          ? `${this.apiUrl}/sdk/voice?${params}`
+          : `${this.apiUrl}/translations/${this.projectId}?${params}`; // JWT path doesn't have voice yet — return empty
+
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (this.usePublicEndpoints) headers["x-api-key"] = this.projectKey;
+        else if (this.apiToken) headers["Authorization"] = `Bearer ${this.apiToken}`;
+
+        const response = await fetch(url, { headers });
+        if (!response.ok) {
+          // Soft-fail: voice data is optional, never block the app.
+          this.voiceCache[cacheKey] = {};
+          return this.voiceCache[cacheKey];
+        }
+        const json = await response.json();
+        // The /translations endpoint doesn't return a voice bundle; only /sdk/voice does.
+        // If the response shape doesn't match { ipa, ssml }, fall back to empty.
+        const data = json.data || json;
+        const looksLikeVoice =
+          data && typeof data === "object" &&
+          Object.values(data).every((v: any) => v && typeof v === "object" && "ipa" in v && "ssml" in v);
+        const bundle: Record<string, { ipa: string; ssml: string }> = looksLikeVoice ? data : {};
+        this.voiceCache[cacheKey] = bundle;
+        return bundle;
+      } finally {
+        delete this.voiceFetchPromises[cacheKey];
+      }
+    })();
+
+    this.voiceFetchPromises[cacheKey] = fetchPromise;
+    return fetchPromise;
+  }
+
+  /**
+   * Look up voice data for a key, walking the same fallback chain as
+   * `translate()` — register-then-language. Returns undefined if no voice
+   * bundle has been loaded for any matching (lang, register).
+   */
+  getVoice(
+    key: string,
+    lang: string,
+    register: Register = DEFAULT_REGISTER
+  ): { ipa: string; ssml: string } | undefined {
+    const chain = getFallbackChain(lang);
+    for (const fallbackLang of chain) {
+      for (const reg of registerFallback(register)) {
+        const bundle = this.voiceCache[bundleKey(fallbackLang, reg)];
+        if (bundle && bundle[key]) return bundle[key];
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Preload voice data into the cache. Useful for SSR or bundling voice with
+   * the app. Accepts the same shape as the API response.
+   */
+  preloadVoice(
+    voice: Record<
+      string,
+      Partial<Record<Register, Record<string, { ipa: string; ssml: string }>>>
+    >
+  ): void {
+    for (const [lang, byRegister] of Object.entries(voice)) {
+      for (const [reg, bundle] of Object.entries(byRegister)) {
+        if (reg !== "default" && reg !== "formal" && reg !== "casual") continue;
+        if (!bundle) continue;
+        this.voiceCache[bundleKey(lang, reg as Register)] = bundle;
+      }
+    }
   }
 
   /**

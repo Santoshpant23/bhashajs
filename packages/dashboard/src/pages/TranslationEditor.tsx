@@ -57,6 +57,11 @@ const REGISTER_HINTS: Record<Register, string> = {
   casual: "Gen-Z friendly, code-mixing with English encouraged",
 };
 
+interface VoiceCell {
+  ipa: string;
+  ssml: string;
+}
+
 interface Translation {
   _id: string;
   key: string;
@@ -66,6 +71,7 @@ interface Translation {
   context?: string;
   source: string;
   sources?: Record<string, Record<string, string>>; // per (lang, register): "human" | "ai" | "approved"
+  voice?: Record<string, Record<string, VoiceCell>>;     // per (lang, register): { ipa, ssml }
 }
 
 /** Read a (lang, register) cell, with default-register fallback so a partially
@@ -79,6 +85,13 @@ function valueAt(t: Translation, lang: string, register: Register): string {
 /** Read the source provenance for a (lang, register) cell. */
 function sourceAt(t: Translation, lang: string, register: Register): string | undefined {
   const langMap = t.sources?.[lang];
+  if (!langMap) return undefined;
+  return langMap[register] || langMap.default;
+}
+
+/** Read the voice-data cell for a (lang, register), with default-register fallback. */
+function voiceAt(t: Translation, lang: string, register: Register): VoiceCell | undefined {
+  const langMap = t.voice?.[lang];
   if (!langMap) return undefined;
   return langMap[register] || langMap.default;
 }
@@ -138,7 +151,7 @@ interface HistoryEntry {
   createdAt: string;
 }
 
-// Language display names — all 13 South Asian languages + English
+// Language display names — 13 South Asian languages + English + Latin-script variants
 const LANG_NAMES: Record<string, string> = {
   en: "English",
   hi: "हिन्दी",
@@ -154,9 +167,16 @@ const LANG_NAMES: Record<string, string> = {
   kn: "ಕನ್ನಡ",
   ml: "മലയാളം",
   si: "සිංහල",
+  // Latin-script variants — names use the colloquial term Gen-Z users recognize
+  "hi-Latn": "Hinglish",
+  "ne-Latn": "Roman Nepali",
+  "ur-Latn": "Roman Urdu",
+  "bn-Latn": "Banglish",
+  "pa-Latn": "Roman Punjabi",
 };
 
-// Google Fonts for each script — used in preview panel
+// Google Fonts for each script — used in preview panel.
+// Latin-script variants render with a clean Latin font (no special font loading).
 const LANG_FONTS: Record<string, string> = {
   hi: "'Noto Sans Devanagari', sans-serif",
   bn: "'Noto Sans Bengali', sans-serif",
@@ -172,9 +192,16 @@ const LANG_FONTS: Record<string, string> = {
   ml: "'Noto Sans Malayalam', sans-serif",
   si: "'Noto Sans Sinhala', sans-serif",
   en: "'DM Sans', sans-serif",
+  // Latin-script: same font as English. Indistinguishable visually, by design.
+  "hi-Latn": "'DM Sans', sans-serif",
+  "ne-Latn": "'DM Sans', sans-serif",
+  "ur-Latn": "'DM Sans', sans-serif",
+  "bn-Latn": "'DM Sans', sans-serif",
+  "pa-Latn": "'DM Sans', sans-serif",
 };
 
-// RTL languages
+// RTL languages — Latin-script variants are LTR even when their base language is RTL
+// (Latin script is intrinsically LTR; that's why people use it for casual typing).
 const RTL_LANGS = new Set(["ur", "pa-PK"]);
 
 export default function TranslationEditor() {
@@ -201,6 +228,10 @@ export default function TranslationEditor() {
     try {
       window.localStorage.setItem("bhashajs_register", currentRegister);
     } catch { /* localStorage may be blocked — non-critical */ }
+    // Re-slice stats for the new register. If the project hasn't loaded yet,
+    // the initial fetch in the load effect handles the first render.
+    if (project) fetchStats();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentRegister]);
 
   // Filters
@@ -245,6 +276,30 @@ export default function TranslationEditor() {
   const [aiTargetLang, setAITargetLang] = useState("");
   const [aiTranslating, setAITranslating] = useState(false);
   const [aiResult, setAIResult] = useState<string | null>(null);
+
+  // Voice mode — when ON, each translation cell shows IPA underneath and a
+  // "Generate voice" button replaces the AI Translate primary action.
+  const [voiceMode, setVoiceMode] = useState(false);
+  const [generatingVoice, setGeneratingVoice] = useState(false);
+
+  // Vertical Packs modal — pre-loaded translation packs for regulated verticals
+  interface VerticalPackMeta {
+    _id: string;
+    code: string;
+    name: string;
+    description: string;
+    vertical: string;
+    regulator?: string;
+    jurisdiction?: string;
+    languages: string[];
+    registers: string[];
+    official: boolean;
+    isSample: boolean;
+  }
+  const [showPacks, setShowPacks] = useState(false);
+  const [packs, setPacks] = useState<VerticalPackMeta[]>([]);
+  const [packsLoading, setPacksLoading] = useState(false);
+  const [importingPack, setImportingPack] = useState<string | null>(null);
 
   // Notifications
   const { unreadCount, notifications, markRead, markAllRead } = useNotifications();
@@ -354,7 +409,20 @@ export default function TranslationEditor() {
   async function fetchStats() {
     try {
       const res = await api.get(`/translations/${projectId}/stats`);
-      setStats(res.data.data.languages);
+      const data = res.data.data;
+      // New server returns { languages, registers } where registers[lang][reg] = cell.
+      // Old server returns just { languages }. Slice the active register out so the
+      // stats panel matches what the user is currently editing.
+      if (data.registers) {
+        const flat: Record<string, LangStats> = {};
+        for (const lang of Object.keys(data.registers)) {
+          const cell = data.registers[lang][currentRegister];
+          if (cell) flat[lang] = cell;
+        }
+        setStats(flat);
+      } else {
+        setStats(data.languages || {});
+      }
     } catch (e) {
       // Stats are non-critical, silently fail
     }
@@ -642,6 +710,61 @@ export default function TranslationEditor() {
     }
   }
 
+  // ─── Voice (IPA + SSML) ──────────────────────────────────────
+
+  async function generateVoiceForLang(lang: string) {
+    if (!projectId) return;
+    setGeneratingVoice(true);
+    try {
+      const res = await api.post(`/translations/${projectId}/generate-voice`, {
+        lang,
+        register: currentRegister,
+      });
+      const data = res.data.data;
+      showToast(`Voice data generated for ${data.generated} key(s) in ${LANG_NAMES[lang] || lang} (${currentRegister})`);
+      await fetchTranslations();
+    } catch (e) {
+      showToast(getErrorMessage(e), "error");
+    } finally {
+      setGeneratingVoice(false);
+    }
+  }
+
+  // ─── Vertical Packs ──────────────────────────────────────────
+
+  async function openPacksModal() {
+    setShowPacks(true);
+    setPacksLoading(true);
+    try {
+      const res = await api.get("/packs");
+      setPacks(res.data.data);
+    } catch (e) {
+      showToast(getErrorMessage(e), "error");
+    } finally {
+      setPacksLoading(false);
+    }
+  }
+
+  async function importPack(code: string) {
+    if (!projectId) return;
+    setImportingPack(code);
+    try {
+      const res = await api.post(`/projects/${projectId}/import-pack`, { code });
+      const data = res.data.data;
+      const skippedNote = data.skippedLangs?.length
+        ? ` (skipped ${data.skippedLangs.join(", ")} — not in this project)`
+        : "";
+      showToast(`${data.created} new + ${data.updated} updated${skippedNote}`);
+      await fetchTranslations();
+      await fetchStats();
+      setShowPacks(false);
+    } catch (e) {
+      showToast(getErrorMessage(e), "error");
+    } finally {
+      setImportingPack(null);
+    }
+  }
+
   // ─── Bulk AI Translate & Review Queue ───────────────────────
 
   async function batchAITranslate(lang: string) {
@@ -653,15 +776,16 @@ export default function TranslationEditor() {
 
     setBatchTranslating(true);
     setBatchLang(lang);
-    setBatchProgress(`Translating ${missing} keys to ${LANG_NAMES[lang] || lang}...`);
+    setBatchProgress(`Translating ${missing} keys to ${LANG_NAMES[lang] || lang} (${currentRegister})...`);
 
     try {
       const res = await api.post(`/translations/${projectId}/ai-translate`, {
         targetLang: lang,
+        register: currentRegister,
       });
       const data = res.data.data;
       setBatchProgress(`Done! ${data.translated} translations generated.`);
-      showToast(`${data.translated} AI translations generated for ${LANG_NAMES[lang] || lang}`);
+      showToast(`${data.translated} ${currentRegister} AI translations generated for ${LANG_NAMES[lang] || lang}`);
 
       // Refresh data
       await fetchTranslations();
@@ -772,9 +896,11 @@ export default function TranslationEditor() {
 
       setImporting(true);
 
-      // Use the new bulk import endpoint
+      // Bulk import targets a single (lang, register) cell. Use the active
+      // register so the import lands where the user is currently editing.
       const res = await api.post(`/translations/${projectId}/bulk`, {
         lang: importLang,
+        register: currentRegister,
         translations: data,
       });
 
@@ -1011,6 +1137,21 @@ export default function TranslationEditor() {
             <button className="btn-ai" onClick={openAIModal}>
               <Sparkles size={16} />
               AI Translate
+            </button>
+          )}
+          {myRole === "owner" && (
+            <button className="btn-ghost" onClick={openPacksModal} title="Browse curated translation packs for regulated verticals">
+              <BookOpen size={16} />
+              Packs
+            </button>
+          )}
+          {!isViewer && (
+            <button
+              className={`btn-ghost ${voiceMode ? "active" : ""}`}
+              onClick={() => setVoiceMode((v) => !v)}
+              title="Toggle voice mode — show IPA phonetic transcription under each cell"
+            >
+              {voiceMode ? "Voice ON" : "Voice"}
             </button>
           )}
           <div className="notif-wrapper">
@@ -1262,6 +1403,57 @@ export default function TranslationEditor() {
           )}
         </div>
 
+        {/* ─── Voice Mode Bar ─────────────────────────────────────── */}
+        {/* Shown only when voice mode is on. Fires AI generation for missing
+            IPA/SSML cells in the currently selected register, one language at
+            a time. Existing voice data is preserved unless explicitly overwritten. */}
+        {voiceMode && project && !isViewer && (
+          <div className="voice-bar">
+            <span className="voice-bar-label">Generate voice for:</span>
+            {project.supportedLanguages.map((lang) => (
+              <button
+                key={lang}
+                className="voice-gen-btn"
+                onClick={() => generateVoiceForLang(lang)}
+                disabled={generatingVoice}
+                title={`Generate IPA + SSML for ${LANG_NAMES[lang] || lang} (${currentRegister})`}
+              >
+                {LANG_NAMES[lang] || lang}
+              </button>
+            ))}
+            {generatingVoice && <span className="voice-bar-status">Generating…</span>}
+          </div>
+        )}
+
+        {/* ─── Register Switcher ─────────────────────────────────── */}
+        {/* Three registers per language: Default, Formal, Casual.
+            Switching here re-renders every cell at the chosen register and
+            scopes saves/AI/import to that register. English is always read at
+            "default" since English has no formal/casual variants. */}
+        <div className="register-bar">
+          <span className="register-bar-label">Register:</span>
+          <div className="register-tabs" role="tablist">
+            {REGISTERS.map((reg) => (
+              <button
+                key={reg}
+                role="tab"
+                aria-selected={currentRegister === reg}
+                title={REGISTER_HINTS[reg]}
+                className={`register-tab ${currentRegister === reg ? "active" : ""}`}
+                onClick={() => {
+                  if (hasUnsaved) {
+                    if (!window.confirm("You have unsaved changes — switch register anyway?")) return;
+                  }
+                  setCurrentRegister(reg);
+                }}
+              >
+                {REGISTER_LABELS[reg]}
+              </button>
+            ))}
+          </div>
+          <span className="register-hint">{REGISTER_HINTS[currentRegister]}</span>
+        </div>
+
         {/* ─── Filter Bar ────────────────────────────────────────── */}
         <div className="filter-bar">
           <span className="filter-label">Filter:</span>
@@ -1332,6 +1524,63 @@ export default function TranslationEditor() {
           </div>
         )}
 
+        {/* ─── Vertical Packs Modal ───────────────────────────── */}
+        {showPacks && (
+          <div className="modal-overlay" onClick={() => !importingPack && setShowPacks(false)}>
+            <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header-row">
+                <h3>
+                  <BookOpen size={18} style={{ verticalAlign: "middle", marginRight: 8 }} />
+                  Vertical Packs
+                </h3>
+                <button className="btn-icon" onClick={() => !importingPack && setShowPacks(false)}>
+                  <X size={18} />
+                </button>
+              </div>
+              <p className="form-hint" style={{ marginBottom: "1rem" }}>
+                Curated translation packs for regulated verticals — fintech KYC, insurance,
+                pharma, government UI. Importing fills empty cells with vetted phrasing;
+                your existing translations are never overwritten.
+              </p>
+              {packsLoading ? (
+                <p>Loading packs...</p>
+              ) : packs.length === 0 ? (
+                <p className="text-muted">No packs available yet.</p>
+              ) : (
+                <div className="packs-list">
+                  {packs.map((p) => (
+                    <div key={p._id} className="pack-card">
+                      <div className="pack-card-header">
+                        <h4 className="pack-name">{p.name}</h4>
+                        <div className="pack-badges">
+                          {p.regulator && <span className="pack-badge pack-badge-regulator">{p.regulator}</span>}
+                          {p.jurisdiction && <span className="pack-badge">{p.jurisdiction}</span>}
+                          {p.isSample && <span className="pack-badge pack-badge-sample">Sample — review before prod use</span>}
+                        </div>
+                      </div>
+                      <p className="pack-description">{p.description}</p>
+                      <div className="pack-meta">
+                        <span><strong>Languages:</strong> {p.languages.map((l) => LANG_NAMES[l] || l).join(", ")}</span>
+                        <span><strong>Registers:</strong> {p.registers.join(", ")}</span>
+                        <span><strong>Vertical:</strong> {p.vertical}</span>
+                      </div>
+                      <div className="pack-actions">
+                        <button
+                          className="btn-primary"
+                          onClick={() => importPack(p.code)}
+                          disabled={!!importingPack}
+                        >
+                          {importingPack === p.code ? "Importing..." : "Import"}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* ─── AI Translate Modal ─────────────────────────────── */}
         {showAIModal && (
           <div className="modal-overlay" onClick={() => !aiTranslating && setShowAIModal(false)}>
@@ -1362,8 +1611,11 @@ export default function TranslationEditor() {
                 <div className="ai-modal-info">
                   <span className="info-count">{missingForLang(aiTargetLang)}</span>
                   <span className="info-text">
-                    keys with English text but missing {LANG_NAMES[aiTargetLang] || aiTargetLang} translation.
-                    AI will translate all of them.
+                    keys with English text but missing {LANG_NAMES[aiTargetLang] || aiTargetLang}{" "}
+                    <strong>{REGISTER_LABELS[currentRegister]}</strong> translation.
+                    AI will generate them in the <strong>{currentRegister}</strong> register
+                    — {REGISTER_HINTS[currentRegister].toLowerCase()}.
+                    Switch the register tab on the editor to target a different one.
                   </span>
                 </div>
               )}
@@ -1415,6 +1667,8 @@ export default function TranslationEditor() {
                 />
                 <span className="form-hint">
                   Flat JSON format. New keys will be created, existing keys will be updated.
+                  Imports the <strong>{REGISTER_LABELS[currentRegister]}</strong> register
+                  for {LANG_NAMES[importLang] || importLang} — switch the register tab above to import elsewhere.
                 </span>
               </div>
               <div className="modal-actions">
@@ -1731,6 +1985,19 @@ export default function TranslationEditor() {
                                 </span>
                               )}
                             </div>
+                            {/* Voice mode: show IPA underneath each cell. SSML is hover-only
+                                (too noisy to render inline). Empty IPA = "not generated yet". */}
+                            {voiceMode && cellValue && (() => {
+                              const v = voiceAt(t, lang, langRegister);
+                              return (
+                                <div
+                                  className={`voice-row ${v?.ipa ? "" : "voice-empty"}`}
+                                  title={v?.ssml || "No SSML generated yet"}
+                                >
+                                  {v?.ipa || "— not generated —"}
+                                </div>
+                              );
+                            })()}
                             {/* History popover */}
                             {historyPopover?.translationId === t._id && historyPopover?.lang === lang && (
                               <div className="history-popover">
@@ -1773,7 +2040,7 @@ export default function TranslationEditor() {
                         {saving === t._id && (
                           <span className="save-indicator"><Save size={14} /></span>
                         )}
-                        {reviewQueueMode && langFilter !== "all" && t.sources?.[langFilter] === "ai" && (
+                        {reviewQueueMode && langFilter !== "all" && sourceAt(t, langFilter, currentRegister) === "ai" && (
                           <>
                             <button
                               className="btn-review-approve"
