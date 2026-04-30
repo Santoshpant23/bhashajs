@@ -94,6 +94,27 @@ export interface BhashaConfig {
    * extra round-trip unless explicitly requested.
    */
   voice?: boolean;
+
+  /**
+   * Initial user segment label (free-form, e.g. "genz", "enterprise", "default").
+   * When combined with `segmentRules`, the segment selects the active register
+   * automatically — same `t("hero.cta")` returns different copy per segment
+   * with no app-level branching.
+   *
+   * Switch at runtime via `setSegment()` from `useTranslation()`.
+   */
+  userSegment?: string;
+
+  /**
+   * Map of segment label → register. When `userSegment` matches a key here,
+   * the SDK uses that register as the active one (overriding `register`).
+   * If the segment isn't in the map, the SDK falls back to `register` or
+   * to `"default"`.
+   *
+   * Example:
+   *   segmentRules={{ genz: "casual", enterprise: "formal" }}
+   */
+  segmentRules?: Record<string, Register>;
 }
 
 /**
@@ -120,6 +141,21 @@ export interface I18nContextValue {
 
   /** Switch to a different register at runtime. */
   setRegister: (register: Register) => void;
+
+  /**
+   * The currently active user segment label (e.g. "genz", "enterprise"),
+   * or undefined if the app didn't set one. Useful for analytics, UI hints,
+   * or conditional rendering tied to segment.
+   */
+  currentSegment?: string;
+
+  /**
+   * Switch the user segment at runtime. If `segmentRules` was provided on the
+   * provider and the new segment is in the map, the active register switches
+   * automatically and the right bundle is fetched. If the segment isn't in the
+   * map, register stays as-is — the segment is just recorded.
+   */
+  setSegment: (segment: string) => void;
 
   /**
    * The translation function — the most important thing in the SDK.

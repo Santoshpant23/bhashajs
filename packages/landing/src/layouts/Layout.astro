@@ -55,7 +55,7 @@ const canonicalURL = canonical || new URL(Astro.url.pathname, Astro.site).toStri
       "@type": "SoftwareSourceCode",
       "name": "bhasha-js",
       "description": "React i18n for South Asian languages — Hindi, Bengali, Urdu, Tamil, Telugu, Marathi, Punjabi, Gujarati, Kannada, Malayalam, Nepali, Sinhala — with auto RTL, lakh/crore numbers, native digits, and CLDR plurals.",
-      "codeRepository": "https://github.com/santoshpant613/bhashajs",
+      "codeRepository": "https://github.com/santoshpant23/bhashajs",
       "programmingLanguage": ["TypeScript", "JavaScript"],
       "license": "https://opensource.org/licenses/MIT",
       "author": {
@@ -151,7 +151,14 @@ const canonicalURL = canonical || new URL(Astro.url.pathname, Astro.site).toStri
     display: flex; align-items: center; gap: 0.5rem;
     font-weight: 700; font-size: 1.1rem;
     color: var(--text);
+    /* Native <a> already gets pointer cursor, but be explicit so any future
+       refactor that wraps the logo in a <div> doesn't silently break the
+       affordance. */
+    cursor: pointer;
+    text-decoration: none;
+    transition: opacity 120ms ease;
   }
+  .logo:hover { opacity: 0.8; text-decoration: none; }
   .logo span:first-child {
     font-family: "Noto Sans Devanagari", sans-serif;
     color: var(--brand);

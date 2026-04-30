@@ -98,12 +98,44 @@ body {
   font-weight: 700;
   color: var(--text-primary);
   letter-spacing: -0.02em;
+  margin: 0;
 }
 .logo-small span {
   color: var(--accent);
   font-family: var(--font-mono);
   font-weight: 500;
   font-size: 1.2rem;
+}
+
+/* Wraps the logo on header pages so clicking returns to the projects home.
+   Strip the default link underline + color so the logo looks identical to
+   the previous decorative <h1>. The cursor is what tells users it's tappable. */
+.logo-link,
+.logo-link:visited,
+.logo-link:hover,
+.logo-link:active {
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  /* Subtle hover hint — opacity-only so the brand color stays consistent. */
+  transition: opacity 120ms ease;
+}
+.logo-link:hover { opacity: 0.75; }
+
+/* Catch-all for clickable affordances that aren't <button>/<a> — a single
+   rule is cheaper than chasing each one. Native buttons/links already have
+   the right cursor; this only kicks in for explicit role="button". */
+[role="button"],
+[data-clickable="true"] {
+  cursor: pointer;
+}
+
+/* Disabled buttons should NOT show the pointer cursor — common pitfall. */
+button:disabled,
+button[aria-disabled="true"] {
+  cursor: not-allowed;
 }
 
 .auth-subtitle {
