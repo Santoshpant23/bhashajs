@@ -17,7 +17,7 @@
  */
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, Link } from "react-router-dom";
 import api, { getErrorMessage } from "../utils/api";
 import {
   ArrowLeft,
@@ -72,6 +72,11 @@ interface Translation {
   source: string;
   sources?: Record<string, Record<string, string>>; // per (lang, register): "human" | "ai" | "approved"
   voice?: Record<string, Record<string, VoiceCell>>;     // per (lang, register): { ipa, ssml }
+  // Compliance lock — when true, AI drafts on this key are NOT served by the
+  // SDK. Only `human` or `approved` cells reach end users. Set automatically
+  // on pack import for items with a regulator citation.
+  regulated?: boolean;
+  mandatedBy?: string;
 }
 
 /** Read a (lang, register) cell, with default-register fallback so a partially
@@ -271,6 +276,15 @@ export default function TranslationEditor() {
   // Stats
   const [stats, setStats] = useState<Record<string, LangStats> | null>(null);
 
+  // Translation Memory coverage — counts of human-verified pairs per (lang, register).
+  // The flywheel: more approvals → larger corpus → eventually a fine-tunable
+  // dataset for a register-aware South-Asian translation model. Threshold is
+  // advisory; we surface progress as a number, not a gate.
+  const [tmCoverage, setTmCoverage] = useState<{
+    total: number;
+    fineTunableThreshold: number;
+  } | null>(null);
+
   // AI Translation modal
   const [showAIModal, setShowAIModal] = useState(false);
   const [aiTargetLang, setAITargetLang] = useState("");
@@ -425,6 +439,21 @@ export default function TranslationEditor() {
       }
     } catch (e) {
       // Stats are non-critical, silently fail
+    }
+    // TM coverage fires alongside stats — same trigger surfaces (project load,
+    // post-approve, post-AI-translate). Failure here is also non-critical;
+    // the widget just doesn't render.
+    try {
+      const res = await api.get(`/translations/${projectId}/memory/coverage`);
+      const data = res.data.data;
+      if (data && typeof data.total === "number") {
+        setTmCoverage({
+          total: data.total,
+          fineTunableThreshold: data.fineTunableThreshold || 5000,
+        });
+      }
+    } catch (e) {
+      // Older servers won't have this endpoint. Stay silent.
     }
   }
 
@@ -1123,6 +1152,12 @@ export default function TranslationEditor() {
       {/* ─── Header ─────────────────────────────────────────── */}
       <header className="page-header">
         <div className="header-left">
+          {/* Logo first so it's always visible top-left as the "home" anchor;
+              Back button next for one-step navigation. Both lead to /projects
+              but the logo follows the convention people expect. */}
+          <Link to="/projects" className="logo-link" aria-label="Go to projects home">
+            <h1 className="logo-small">भाषा<span>JS</span></h1>
+          </Link>
           <button className="btn-ghost" onClick={goBack}>
             <ArrowLeft size={18} />
             Back
@@ -1282,6 +1317,25 @@ export default function TranslationEditor() {
                 )}
               </div>
             ))}
+            {/* TM coverage — visible signal of the flywheel. Every approved
+                AI translation increments this. Above the threshold, the corpus
+                is large enough to seed register-aware fine-tuning of a small
+                open model. We surface progress as a number, not a gate. */}
+            {tmCoverage && tmCoverage.total > 0 && (
+              <div
+                className="stat-item tm-coverage"
+                title={`Translation Memory has ${tmCoverage.total} verified pair${
+                  tmCoverage.total === 1 ? "" : "s"
+                }. At ~${tmCoverage.fineTunableThreshold} per (language, register) cell this corpus becomes useful for fine-tuning a custom translator.`}
+                style={{ marginLeft: "auto", opacity: 0.85 }}
+              >
+                <span className="stat-lang">TM</span>
+                <span className="stat-pct">
+                  {tmCoverage.total.toLocaleString()} pair
+                  {tmCoverage.total === 1 ? "" : "s"}
+                </span>
+              </div>
+            )}
           </div>
         )}
 
@@ -1904,7 +1958,23 @@ export default function TranslationEditor() {
                   <tr>
                     {/* Key column */}
                     <td className="col-key">
-                      <code className="key-name">{t.key}</code>
+                      <code className="key-name">
+                        {t.regulated && (
+                          <span
+                            className="regulated-lock"
+                            title={
+                              t.mandatedBy
+                                ? `Compliance lock — ${t.mandatedBy}. AI drafts on this key are NOT served by the SDK until you approve them.`
+                                : "Compliance lock — AI drafts on this key are NOT served by the SDK until you approve them."
+                            }
+                            style={{ marginRight: "0.4em", cursor: "help" }}
+                            aria-label="regulated"
+                          >
+                            🔒
+                          </span>
+                        )}
+                        {t.key}
+                      </code>
                       {t.context && <span className="key-context">{t.context}</span>}
                       {missingCount(t) > 0 && (
                         <span className="missing-badge">

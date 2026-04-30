@@ -98,6 +98,7 @@ router.post(
         const projectObjectId = new mongoose.Types.ObjectId(projectId as string);
         let existing = await Translation.findOne({ projectId: projectObjectId, key: item.key });
         const isNew = !existing;
+        const itemMandate = typeof item.mandatedBy === "string" ? item.mandatedBy.trim() : "";
         if (!existing) {
           existing = await Translation.create({
             projectId: projectObjectId,
@@ -106,10 +107,21 @@ router.post(
             sources: {},
             context: item.context || undefined,
             source: "human",
+            // Pack items with a regulator citation lock the key automatically.
+            // Owners can untick this in the dashboard if they really mean to.
+            regulated: !!itemMandate,
+            mandatedBy: itemMandate,
           });
-        } else if (item.context && !existing.context) {
-          // Backfill context if the existing translation didn't have one
-          existing.context = item.context;
+        } else {
+          if (item.context && !existing.context) {
+            existing.context = item.context;
+          }
+          // Promote to regulated if the pack says so. Never silently demote —
+          // an owner who marked a key regulated shouldn't lose that on re-import.
+          if (itemMandate) {
+            existing.regulated = true;
+            if (!existing.mandatedBy) existing.mandatedBy = itemMandate;
+          }
         }
 
         let touched = false;

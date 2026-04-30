@@ -83,6 +83,15 @@ const translationSchema = new Schema({
     },
     default: {},
   },
+  // Compliance lock: when true, the public SDK endpoint refuses to serve any
+  // (lang, register) cell whose source isn't "human" or "approved" — AI drafts
+  // never reach end users on a regulated key. Set automatically on pack import
+  // for items with a `mandatedBy` citation; can be toggled by project owners.
+  regulated: { type: Boolean, default: false },
+  // Free-form citation for the regulator/clause that mandates this string,
+  // e.g. "RBI Master Directions on KYC, 2023". Surfaced to translators in the
+  // dashboard so they understand why the key is locked.
+  mandatedBy: { type: String, default: "" },
   updatedAt: { type: Date, default: Date.now },
 });
 

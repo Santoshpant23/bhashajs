@@ -61,6 +61,12 @@ router.get("/project", (req: Request, res: Response) => {
 // Returns a flat Record<key, string> for one language at one register.
 // Backwards-compatible: callers that don't pass `register` get "default",
 // which is the same shape old SDKs (<= 0.1.x) expect.
+//
+// COMPLIANCE LOCK: For any translation row marked `regulated: true`, we only
+// serve cells whose source provenance is "human" or "approved". An AI draft
+// on a regulated key never reaches end users — the SDK falls back to the
+// default register (also gated) or to the key itself. Project owners must
+// explicitly approve regulated drafts in the dashboard before they go live.
 router.get("/translations", async (req: Request, res: Response) => {
   try {
     const project = (req as any).project;
@@ -80,10 +86,11 @@ router.get("/translations", async (req: Request, res: Response) => {
 
     for (const t of translations) {
       // Try the requested register, fall back to "default" so a partially
-      // localized casual register still produces a usable bundle.
-      let value = readValue(t.translations as any, lang, reg);
+      // localized casual register still produces a usable bundle. For
+      // regulated rows, gate each candidate cell on its source provenance.
+      let value = pickSafe(t, lang, reg);
       if (!value && reg !== DEFAULT_REGISTER) {
-        value = readValue(t.translations as any, lang, DEFAULT_REGISTER);
+        value = pickSafe(t, lang, DEFAULT_REGISTER);
       }
       if (value) flat[t.key] = value;
     }
@@ -93,6 +100,21 @@ router.get("/translations", async (req: Request, res: Response) => {
     return sendError(res, 500, "Failed to fetch translations");
   }
 });
+
+/**
+ * Read a (lang, register) value from a translation, applying the compliance
+ * lock: regulated rows only serve human or approved cells. Returns undefined
+ * (i.e. "no servable value") for ai-source cells on regulated rows so the
+ * caller falls back to the next candidate or to the key itself.
+ */
+function pickSafe(t: any, lang: string, register: any): string | undefined {
+  const value = readValue(t.translations as any, lang, register);
+  if (!value) return undefined;
+  if (!t.regulated) return value;
+  const source = readValue(t.sources as any, lang, register);
+  if (source === "human" || source === "approved") return value;
+  return undefined;
+}
 
 // ─── GET VOICE BUNDLE ─────────────────────────────────────────
 // Returns Record<key, { ipa, ssml }> for one (lang, register).

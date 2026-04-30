@@ -355,6 +355,14 @@ router.post(
         }
       }
 
+      // Compliance lock fields — only the owner can flip `regulated`. Translators
+      // can attach a `mandatedBy` citation but it doesn't lock the key on its own.
+      const isOwner = req.membership?.role === "owner";
+      const incomingRegulated =
+        isOwner && typeof req.body.regulated === "boolean" ? req.body.regulated : false;
+      const incomingMandatedBy =
+        typeof req.body.mandatedBy === "string" ? req.body.mandatedBy.trim() : "";
+
       const translation = await Translation.create({
         projectId: new mongoose.Types.ObjectId(projectId as string),
         key: key.trim(),
@@ -362,6 +370,8 @@ router.post(
         context: context?.trim() || undefined,
         source: source || "human",
         sources: sourcesMap,
+        regulated: incomingRegulated,
+        mandatedBy: incomingMandatedBy,
       });
 
       // Record history for each initial (lang, register) cell
@@ -523,6 +533,17 @@ router.put("/:id", async (req: AuthRequest, res: Response) => {
 
     if (source) translation.source = source;
     if (context !== undefined) translation.context = context?.trim();
+
+    // Compliance lock — owner-only flip. mandatedBy citation can be edited by
+    // any non-viewer (translators may want to add the regulator clause they
+    // found while translating), but only owners can lock/unlock a key.
+    if (typeof req.body.mandatedBy === "string") {
+      (translation as any).mandatedBy = req.body.mandatedBy.trim();
+    }
+    if (typeof req.body.regulated === "boolean" && member.role === "owner") {
+      (translation as any).regulated = req.body.regulated;
+    }
+
     translation.updatedAt = new Date();
 
     await translation.save();
@@ -865,6 +886,63 @@ router.get(
       return sendSuccess(res, 200, memories);
     } catch (e) {
       return sendError(res, 500, "Failed to fetch translation memory");
+    }
+  }
+);
+
+// ─── TRANSLATION MEMORY COVERAGE ────────────────────────────
+// Per-(lang, register) count of human-verified pairs collected so far.
+// This is the visible artifact of the TM flywheel — every approved AI
+// translation becomes a corpus row, and the dashboard shows progress
+// toward the threshold where this corpus becomes useful for fine-tuning
+// (~5,000 pairs per (lang, register) is a reasonable starting line).
+//
+// Returns:
+//   {
+//     total: 1247,
+//     byCell: [{ lang: "hi", register: "default", count: 412 }, ...],
+//     fineTunableThreshold: 5000  // advisory; cells above this are flagged
+//   }
+router.get(
+  "/:projectId/memory/coverage",
+  requireProjectRole("owner", "translator", "viewer"),
+  async (req: ProjectAuthRequest, res: Response) => {
+    try {
+      const { projectId } = req.params;
+      const idError = validateObjectId(projectId as string, "Project ID");
+      if (idError) return sendError(res, 400, idError);
+
+      // Group by (lang, register). For an early-stage product the project's
+      // memory is small enough that we don't bother with $facet — a single
+      // aggregation is fine and stays in one round trip.
+      const grouped = await TranslationMemory.aggregate([
+        { $match: { projectId: new mongoose.Types.ObjectId(projectId as string) } },
+        {
+          $group: {
+            _id: { lang: "$lang", register: "$register" },
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { count: -1 } },
+      ]);
+
+      const byCell = grouped.map((row: any) => ({
+        lang: row._id.lang,
+        register: row._id.register || DEFAULT_REGISTER,
+        count: row.count,
+      }));
+      const total = byCell.reduce((sum: number, row: any) => sum + row.count, 0);
+
+      return sendSuccess(res, 200, {
+        total,
+        byCell,
+        // Advisory only — the real fine-tune threshold depends on language pair
+        // and downstream model, but ~5k is the rough lower-bound for getting
+        // measurable wins out of LoRA on a 7B model.
+        fineTunableThreshold: 5000,
+      });
+    } catch (e) {
+      return sendError(res, 500, "Failed to fetch memory coverage");
     }
   }
 );
