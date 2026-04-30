@@ -50,19 +50,20 @@ export function writeValue(
   register: Register,
   value: string
 ): void {
-  const outer = doc[field];
-  if (!outer) {
+  if (!doc[field]) {
     doc[field] = new Map();
   }
   const map = doc[field] as Map<string, Map<string, string>>;
   let inner = map.get(lang);
   if (!inner) {
-    inner = new Map<string, string>();
-    map.set(lang, inner);
+    // Mongoose's Map.set casts the value into its own internal Map and stores
+    // that copy — the JS Map we pass in becomes orphaned. So we set first,
+    // then re-fetch the live cast Map before mutating it. Without this,
+    // inner.set(...) writes to a detached object and the change is lost.
+    map.set(lang, new Map());
+    inner = map.get(lang) as Map<string, string>;
   }
   inner.set(register, value);
-  // Map-of-Map mutations sometimes need an explicit nudge for Mongoose
-  // to flush nested changes to disk.
   if (typeof doc.markModified === "function") {
     doc.markModified(field);
   }
