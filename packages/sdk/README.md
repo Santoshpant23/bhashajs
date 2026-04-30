@@ -3,7 +3,7 @@
 **React i18n built for South Asian languages** — Hindi, Bengali, Urdu, Tamil, Telugu, Marathi, Punjabi, Gujarati, Kannada, Malayalam, Nepali, Sinhala. RTL switching for Urdu, native script fonts, lakh/crore numbers (₹12,34,567), region-aware currency, and CLDR plurals — all out of the box.
 
 [![npm version](https://img.shields.io/npm/v/bhasha-js.svg)](https://www.npmjs.com/package/bhasha-js)
-[![license](https://img.shields.io/npm/l/bhasha-js.svg)](https://github.com/santoshpant613/bhashajs/blob/master/LICENSE)
+[![license](https://img.shields.io/npm/l/bhasha-js.svg)](https://github.com/santoshpant23/bhashajs/blob/master/LICENSE)
 [![bundle size](https://img.shields.io/bundlephobia/minzip/bhasha-js)](https://bundlephobia.com/package/bhasha-js)
 
 ```bash
@@ -115,7 +115,21 @@ The whole stack is open source. `docker compose up` and you own it. Point the SD
 </I18nProvider>
 ```
 
-See the [main repo](https://github.com/santoshpant613/bhashajs) for self-hosting docs.
+See the [main repo](https://github.com/santoshpant23/bhashajs) for self-hosting docs.
+
+---
+
+## What's new in 0.2
+
+- **Register-aware translations** — same key, three formality variants (`default` / `formal` / `casual`). Casual leans into code-mixing; formal sticks to native vocabulary.
+- **Code-mixed locales as first-class** — `hi-Latn` (Hinglish), `ne-Latn` (Roman Nepali), `ur-Latn` (Roman Urdu), `bn-Latn` (Banglish), `pa-Latn` (Roman Punjabi). Real locales with their own translation memory, plural rules, and fallback chains.
+- **Segment-aware register switching** — pass `userSegment` + `segmentRules` and the SDK picks the right register at render time. Same `t("hero.cta")` returns "Add करो" for Gen-Z and "जोड़ें" for enterprise users.
+- **Compliance lock** — keys marked `regulated` (auto-set by regulator-pinned vertical packs) refuse to serve AI drafts. Only human-approved values reach end users.
+- **Voice-ready outputs** — every (lang, register) cell can produce IPA + SSML. `formatPhonetic("hero.cta")` and `formatSSML("hero.cta")` give you everything a TTS engine (AWS Polly, Google Cloud TTS, ElevenLabs) needs.
+
+### Translation Memory flywheel
+
+Every approved AI translation becomes a `(source, lang, register, target)` row in your project's translation memory. Today this improves AI translations via in-prompt examples. Once a (lang, register) cell has ~5,000 verified pairs, that corpus is large enough to fine-tune a small open model (LoRA on a 7B base) for register-aware South-Asian translation that doesn't depend on Gemini at runtime. The dashboard surfaces TM coverage as a visible counter — your moat compounds with every approval.
 
 ---
 
@@ -350,8 +364,8 @@ The utilities work. The components rely on `document` for RTL switching and Goog
 
 - 🌐 Website + dashboard: https://bhashajs.com
 - 📚 Docs: https://bhashajs.com/docs
-- 🔧 Source: https://github.com/santoshpant613/bhashajs
-- 🐛 Issues: https://github.com/santoshpant613/bhashajs/issues
+- 🔧 Source: https://github.com/santoshpant23/bhashajs
+- 🐛 Issues: https://github.com/santoshpant23/bhashajs/issues
 
 ## License
 

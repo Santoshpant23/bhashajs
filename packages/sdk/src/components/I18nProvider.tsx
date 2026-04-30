@@ -54,12 +54,24 @@ export function I18nProvider({
   region,
   register: initialRegister = DEFAULT_REGISTER,
   voice: voiceEnabled = false,
+  userSegment,
+  segmentRules,
   children,
 }: I18nProviderProps) {
   // ─── State ───────────────────────────────────────────────────
 
+  // Resolve initial register from the segment if a matching rule exists,
+  // otherwise fall back to the explicit `register` prop. This lets apps
+  // declare `userSegment="genz"` and skip wiring `register="casual"` separately.
+  const initialResolvedRegister = resolveRegisterFromSegment(
+    userSegment,
+    segmentRules,
+    initialRegister
+  );
+
   const [currentLang, setCurrentLang] = useState(defaultLang);
-  const [currentRegister, setCurrentRegister] = useState<Register>(initialRegister);
+  const [currentRegister, setCurrentRegister] = useState<Register>(initialResolvedRegister);
+  const [currentSegment, setCurrentSegment] = useState<string | undefined>(userSegment);
   const [supportedLangs, setSupportedLangs] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -180,6 +192,27 @@ export function I18nProvider({
     [currentLang, currentRegister, client]
   );
 
+  // ─── Segment Switching ───────────────────────────────────────
+  // Setting a segment that maps to a register (via segmentRules) flips both
+  // the segment and the register and pre-fetches the new bundle. Setting a
+  // segment that ISN'T in the rules just records the segment label — the
+  // register stays as it was. This lets apps record analytics-only segments
+  // without forcing a register change.
+
+  const setSegment = useCallback(
+    async (newSegment: string) => {
+      setCurrentSegment(newSegment);
+      const mapped = segmentRules?.[newSegment];
+      if (mapped && mapped !== currentRegister) {
+        setIsLoading(true);
+        await client.fetchTranslations(currentLang, mapped);
+        setIsLoading(false);
+        setCurrentRegister(mapped);
+      }
+    },
+    [currentLang, currentRegister, client, segmentRules]
+  );
+
   // ─── The t() function ────────────────────────────────────────
 
   const t = useCallback(
@@ -239,6 +272,8 @@ export function I18nProvider({
     supportedLangs,
     register: currentRegister,
     setRegister,
+    currentSegment,
+    setSegment,
     t,
     isLoading,
     error,
@@ -254,6 +289,22 @@ export function I18nProvider({
       {children}
     </I18nContext.Provider>
   );
+}
+
+/**
+ * Pick the active register given a (possibly undefined) user segment, a
+ * (possibly undefined) segment→register rule map, and a fallback register.
+ *
+ * Pulled out of the provider body so it's easy to unit-test without React.
+ * Exported for the same reason — the test imports it directly.
+ */
+export function resolveRegisterFromSegment(
+  segment: string | undefined,
+  rules: Record<string, Register> | undefined,
+  fallback: Register
+): Register {
+  if (segment && rules && rules[segment]) return rules[segment];
+  return fallback;
 }
 
 /**

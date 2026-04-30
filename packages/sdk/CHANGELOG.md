@@ -2,6 +2,27 @@
 
 All notable changes to `bhasha-js` are documented here.
 
+## 0.2.0 — 2026-04-27
+
+### Added
+- **Register-aware translations** — every key supports `default`, `formal`, and `casual` variants per language. The casual register leans into code-mixing; the formal register sticks to native vocabulary. Pass `register` on `<I18nProvider>` or switch at runtime via `setRegister()`.
+- **Code-mixed locales as first-class** — `hi-Latn` (Hinglish), `ne-Latn` (Roman Nepali), `ur-Latn` (Roman Urdu), `bn-Latn` (Banglish), `pa-Latn` (Roman Punjabi). Real locales with their own translation memory, plural rules (inheriting from base language), fallback chains (script affinity beats language affinity — Hinglish does NOT fall back to Devanagari Hindi), and currency.
+- **Segment-aware register switching** — pass `userSegment` + `segmentRules` props. The SDK picks the active register at render time based on the user segment. Same `t("hero.cta")` returns "Add करो" for `genz` and "जोड़ें" for `enterprise`. Switch at runtime via `setSegment()` from `useTranslation()`.
+- **Voice-ready outputs** — `formatPhonetic(key)` returns IPA, `formatSSML(key)` returns SSML 1.0 markup. Pass `voice: true` on the provider to pre-fetch voice bundles. Designed for AWS Polly, Google Cloud TTS, ElevenLabs.
+- **Compliance lock awareness** — when the server has a key marked `regulated`, the SDK transparently skips AI-source values and falls back to default register or the key itself. AI drafts on regulated keys never reach end users until human-approved — no app-side change required.
+- **Translation Memory flywheel exposure** — the dashboard surfaces TM coverage as a counter; the SDK is unchanged but customers can see their corpus growing toward the fine-tunable threshold.
+
+### Changed
+- `useTranslation()` returns now include `register`, `setRegister`, `currentSegment`, `setSegment`, `formatPhonetic`, `formatSSML`. All additive — existing apps keep working unchanged.
+- The SDK now caches translations per `(lang, register)`; the API accepts `?register=` as an optional query param. The server falls back to `default` register so old SDKs (≤ 0.1.x) keep working against the new backend.
+
+### Fixed
+- `repository.url` and `bugs.url` corrected to `github.com/santoshpant23/bhashajs`.
+- README links to the GitHub repo all fixed.
+
+### Removed
+- The `0.2.0-beta.0` tag is dropped — this is the stable 0.2.0 release.
+
 ## 0.1.0-beta.2 — 2026-04-26
 
 ### Added

@@ -8,7 +8,7 @@
  */
 
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import api, { getErrorMessage } from "../utils/api";
 import {
@@ -289,7 +289,12 @@ export default function ProjectsPage() {
       {/* ─── Header ─────────────────────────────────────────── */}
       <header className="page-header">
         <div className="header-left">
-          <h1 className="logo-small">भाषा<span>JS</span></h1>
+          {/* Logo doubles as a "home" link — clicking returns to /projects.
+              On the projects page itself this is a no-op refresh, but the
+              affordance keeps users from feeling stranded on sub-pages. */}
+          <Link to="/projects" className="logo-link" aria-label="Go to projects home">
+            <h1 className="logo-small">भाषा<span>JS</span></h1>
+          </Link>
         </div>
         <div className="header-actions">
           {userName && (

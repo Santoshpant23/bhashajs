@@ -7,16 +7,29 @@ BhashaJS is an open-source internationalization platform that provides AI-powere
 ## Features
 
 - **React SDK** (`bhasha-js`) — `<I18nProvider>`, `useTranslation()` hook, `<LanguageSwitcher>`, `<Trans>` component
+- **Register-aware translations** — same key produces formal / default / casual variants per language; pick at render time
+- **Code-mixed locales as first-class** — Hinglish (`hi-Latn`), Roman Nepali (`ne-Latn`), Roman Urdu (`ur-Latn`), Banglish (`bn-Latn`), Roman Punjabi (`pa-Latn`) as proper locales, not "broken" Hindi/Nepali/etc.
+- **Segment-aware register switching** — `userSegment` prop maps user types ("genz", "enterprise") to registers; same key serves different copy with no app-level branching
+- **Compliance lock** — keys marked `regulated` only serve human-approved values; AI drafts are held until reviewed. Auto-set on import from regulator-pinned vertical packs (RBI, SEBI, IRDAI, etc.)
+- **Voice-ready outputs** — every (lang, register) translation can emit IPA phonetics + SSML markup for TTS pipelines
+- **Translation Memory flywheel** — every approved translation is collected as a `(source, lang, register, target)` row; surfaced in the dashboard as a coverage counter. The corpus underpins a future fine-tunable register-aware model (v0.3+).
 - **South Asian formatting** — lakh/crore number grouping, native digits, regional currency symbols
 - **RTL support** — automatic layout flipping for Urdu
 - **Script-aware fonts** — auto-loads the right Google Font per language
-- **Fallback chains** — Bengali falls back to Hindi before English
+- **Fallback chains** — Bengali falls back to Hindi before English; Dravidian languages skip Hindi
 - **CLDR pluralization** — correct plural rules for every supported language
-- **AI translations** — Google Gemini-powered with translation memory and glossary enforcement
+- **AI translations** — Google Gemini-powered with translation memory and glossary enforcement, register + vertical aware
+- **Vertical packs** — pre-loaded translation packs for regulated verticals (fintech KYC starter ships in v0.2)
 - **Dashboard** — manage keys, invite translators, review AI translations, export to CSV/Android XML/iOS .strings
 - **Team collaboration** — owner/translator/viewer roles with per-language assignments
 - **Version history** — full audit trail of every translation change
 - **API key auth** — developers get a project API key, no JWT needed in client apps
+
+## Roadmap (v0.3+)
+
+- **Conversion-tied dialect optimization** — SDK reports back which translations users finish flows with vs bounce from; dashboard surfaces best-converting variants per locale
+- **WhatsApp translator CMS** — translators get a WhatsApp bot for low-friction approval, perfect for South Asian translator pools who don't live in desktop CMSes
+- **Custom fine-tuned translator** — once a project's TM corpus crosses ~5k pairs per (lang, register), opt in to a project-private fine-tuned model that replaces Gemini for matching keys
 
 ## Architecture
 
@@ -33,7 +46,7 @@ packages/
 # Prerequisites: Node 20+, MongoDB running locally (or use Docker)
 
 # 1. Clone
-git clone https://github.com/user/bhashajs.git
+git clone https://github.com/santoshpant23/bhashajs.git
 cd bhashajs
 
 # 2. Install dependencies
