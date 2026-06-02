@@ -35,7 +35,34 @@ for (const key of REQUIRED_ENV) {
   }
 }
 
+// JWT secret strength. A present-but-weak secret (e.g. the dev placeholder
+// "something-todo") passes the presence check above and boots clean, leaving
+// every user's token trivially forgeable. Refuse to start on a weak secret.
+const jwtSecret = process.env.JWT_SECRET || "";
+const WEAK_JWT_SECRETS = new Set(["something-todo", "changeme", "secret", "jwt_secret", "your-secret-here"]);
+if (jwtSecret.length < 32 || WEAK_JWT_SECRETS.has(jwtSecret.toLowerCase())) {
+  console.error(
+    "FATAL: JWT_SECRET is too weak. Use at least 32 random characters.\n" +
+    "Generate one with:  openssl rand -hex 32"
+  );
+  process.exit(1);
+}
+
+// AI translation is optional at boot but the dashboard's AI/voice endpoints
+// fail at call time without a key — warn loudly rather than crash.
+if (!process.env.GEMINI_API_KEY) {
+  console.warn(
+    "[BhashaJS] GEMINI_API_KEY is not set — AI translation and voice generation will fail until it is."
+  );
+}
+
 const app = express();
+
+// Trust the first proxy hop (nginx / Vercel / Railway) so req.ip and
+// express-rate-limit resolve the real client IP. Without this, behind a proxy
+// every request shares one bucket, so a single attacker can exhaust the auth
+// or AI rate limit and lock out / block every tenant.
+app.set("trust proxy", 1);
 
 // ─── Middleware ───────────────────────────────────────────────
 app.use(express.json({ limit: "1mb" }));
@@ -80,6 +107,9 @@ const aiLimiter = rateLimit({
 app.use("/api", generalLimiter);
 app.use("/api/auth", authLimiter);
 app.use("/api/translations/:projectId/ai-translate", aiLimiter);
+// generate-voice also calls Gemini per request — cap it on the same bucket so
+// neither AI endpoint can be used to run up the model bill.
+app.use("/api/translations/:projectId/generate-voice", aiLimiter);
 
 // ─── Health check (before auth routes) ──────────────────────
 app.get("/api/health", (req, res) => {
@@ -139,9 +169,23 @@ async function start() {
     await mongoose.connect(process.env.MONGO_CONNECTION_URL || "");
     console.log("MongoDB connected successfully");
 
-    // Run one-time migrations (idempotent)
-    await migrateOwnerMemberships();
-    await migrateRegisters();
+    // Run one-time migrations, gated by a stored version so the full-collection
+    // scans don't run on every restart once they've completed.
+    const Meta = (await import("./models/Meta")).default;
+    const MIGRATION_VERSION = 1;
+    const metaDoc = await Meta.findOne({ key: "migrationVersion" });
+    const ranVersion = typeof metaDoc?.value === "number" ? metaDoc.value : 0;
+    if (ranVersion < MIGRATION_VERSION) {
+      console.log(`[Migration] running migrations (have v${ranVersion}, want v${MIGRATION_VERSION})`);
+      await migrateOwnerMemberships();
+      await migrateRegisters();
+      await Meta.findOneAndUpdate(
+        { key: "migrationVersion" },
+        { value: MIGRATION_VERSION, updatedAt: new Date() },
+        { upsert: true }
+      );
+    }
+    // Seeding vertical packs is small and idempotent — safe to run each boot.
     await seedVerticalPacks();
 
     const port = process.env.PORT || 5000;

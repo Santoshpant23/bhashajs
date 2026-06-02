@@ -42,6 +42,7 @@ import {
   Register,
 } from "../utils/registers";
 import { isValidRegister, REGISTERS } from "../models/Translation";
+import { resolveWriteSource } from "../utils/compliance";
 
 const router = Router();
 
@@ -197,14 +198,14 @@ router.get(
         translated: number;
         total: number;
         percentage: number;
-        sources: { human: number; ai: number; approved: number };
+        sources: { human: number; ai: number; approved: number; pending: number };
       };
 
       const empty = (): CellStats => ({
         translated: 0,
         total: totalKeys,
         percentage: 0,
-        sources: { human: 0, ai: 0, approved: 0 },
+        sources: { human: 0, ai: 0, approved: 0, pending: 0 },
       });
 
       const registers: Record<string, Record<string, CellStats>> = {};
@@ -228,6 +229,7 @@ router.get(
             if (src === "human") cell.sources.human++;
             else if (src === "ai") cell.sources.ai++;
             else if (src === "approved") cell.sources.approved++;
+            else if (src === "pending") cell.sources.pending++;
           }
         }
       }
@@ -323,7 +325,7 @@ router.post(
   async (req: ProjectAuthRequest, res: Response) => {
     try {
       const { projectId } = req.params;
-      const { key, translations, context, source } = req.body;
+      const { key, translations, context } = req.body;
 
       const idError = validateObjectId(projectId as string, "Project ID");
       if (idError) return sendError(res, 400, idError);
@@ -346,12 +348,26 @@ router.post(
       const incomingRegister = coerceRegister(req.body.register);
       const normalized = normalizePayload(translations, incomingRegister);
 
-      // Mirror the same shape into sources, stamping each cell with `source`.
+      // Translator language restriction: a translator can only create a key
+      // whose payload languages are all in their assignedLanguages. Empty
+      // assignment = no languages allowed (consistent with bulk/AI routes).
+      if (req.membership?.role === "translator") {
+        const assigned = new Set(req.membership.assignedLanguages || []);
+        for (const lang of Object.keys(normalized)) {
+          if (!assigned.has(lang)) {
+            return sendError(res, 403, `You are not assigned to translate "${lang}"`);
+          }
+        }
+      }
+
+      // `source` is route-determined, never client-provided. The manual create
+      // path always means a human typed it; AI drafts go through ai-translate
+      // and approvals through review.
       const sourcesMap: Record<string, Record<string, string>> = {};
       for (const [lang, langMap] of Object.entries(normalized)) {
         sourcesMap[lang] = {};
         for (const reg of Object.keys(langMap)) {
-          sourcesMap[lang][reg] = source || "human";
+          sourcesMap[lang][reg] = "human";
         }
       }
 
@@ -368,7 +384,7 @@ router.post(
         key: key.trim(),
         translations: normalized,
         context: context?.trim() || undefined,
-        source: source || "human",
+        source: "human",
         sources: sourcesMap,
         regulated: incomingRegulated,
         mandatedBy: incomingMandatedBy,
@@ -428,21 +444,34 @@ router.post(
 
       let created = 0;
       let updated = 0;
+      let skipped = 0;
+      const keyRegex = /^[a-z0-9._]+$/;
 
-      for (const [key, value] of Object.entries(translations)) {
-        if (typeof value !== "string") continue;
+      // Compliance lock on write also applies to bulk import: a non-owner may
+      // not publish a cell on a regulated key. Their bulk write is held as
+      // "pending" until an owner approves it (see PUT /:id and /review).
+      const bulkIsOwner = req.membership?.role === "owner";
+
+      for (const [rawKey, value] of Object.entries(translations)) {
+        if (typeof value !== "string") { skipped++; continue; }
+        const key = rawKey.trim();
+        // Same key shape rule as single create — silently skip malformed keys
+        // rather than aborting the whole import (typical CSV/JSON dumps will
+        // have a few stray entries that shouldn't kill a 5,000-row import).
+        if (!key || !keyRegex.test(key)) { skipped++; continue; }
 
         const existing = await Translation.findOne({ projectId, key });
 
         if (existing) {
+          const writeSource = resolveWriteSource((existing as any).regulated === true, bulkIsOwner);
           const oldValue = readValue(existing.translations as any, lang, register) || "";
           writeValue(existing, "translations", lang, register, value);
-          writeValue(existing, "sources", lang, register, "human");
+          writeValue(existing, "sources", lang, register, writeSource);
           existing.updatedAt = new Date();
           await existing.save();
           await recordHistory(
             existing._id, projectId, lang, register, key,
-            oldValue, value, "human", req.userId!
+            oldValue, value, writeSource, req.userId!
           );
           updated++;
         } else {
@@ -462,9 +491,10 @@ router.post(
       }
 
       return sendSuccess(res, 200, {
-        message: `Import complete: ${created} created, ${updated} updated`,
+        message: `Import complete: ${created} created, ${updated} updated${skipped ? `, ${skipped} skipped` : ""}`,
         created,
         updated,
+        skipped,
       });
     } catch (e) {
       return sendError(res, 500, "Failed to import translations");
@@ -481,7 +511,7 @@ router.post(
 router.put("/:id", async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
-    const { translations, context, source, editedLang } = req.body;
+    const { translations, context, editedLang } = req.body;
     const editedRegister = coerceRegister(req.body.editedRegister);
 
     const idError = validateObjectId(id as string, "Translation ID");
@@ -501,9 +531,12 @@ router.put("/:id", async (req: AuthRequest, res: Response) => {
     if (!member) return sendError(res, 403, "Not authorized for this project");
     if (member.role === "viewer") return sendError(res, 403, "Viewers cannot edit translations");
 
-    // Translator language restriction
+    // Translator language restriction. Empty assignedLanguages = no languages
+    // allowed (a translator with nothing assigned shouldn't be able to write
+    // anything). Owners must assign languages explicitly when promoting a
+    // member to "translator".
     if (member.role === "translator" && editedLang) {
-      if (member.assignedLanguages.length > 0 && !member.assignedLanguages.includes(editedLang)) {
+      if (!member.assignedLanguages.includes(editedLang)) {
         return sendError(res, 403, `You are not assigned to translate "${editedLang}"`);
       }
     }
@@ -523,15 +556,64 @@ router.put("/:id", async (req: AuthRequest, res: Response) => {
 
     if (editedLang && typeof newValue === "string") {
       const oldValue = readValue(translation.translations as any, editedLang, editedRegister) || "";
+
+      // ─── Compliance lock on WRITE ───────────────────────────────────────
+      // On a regulated key, only an owner (the approval authority) may publish
+      // a cell directly. A non-owner's edit is still written, but stamped
+      // "pending" so the SDK's compliance gate (pickSafe in routes/sdk.ts,
+      // which serves only "human"/"approved") holds it back until an owner
+      // approves it via /review. Previously every edit was stamped "human"
+      // with no `regulated` check, so a translator's save went live instantly
+      // — silently defeating the entire compliance-lock guarantee.
+      const isRegulated = (translation as any).regulated === true;
+      const writeSource = resolveWriteSource(isRegulated, member.role === "owner");
+
       await recordHistory(
         translation._id, translation.projectId, editedLang, editedRegister,
-        translation.key, oldValue, newValue, "human", req.userId!
+        translation.key, oldValue, newValue, writeSource, req.userId!
       );
       writeValue(translation, "translations", editedLang, editedRegister, newValue);
-      writeValue(translation, "sources", editedLang, editedRegister, "human");
+      writeValue(translation, "sources", editedLang, editedRegister, writeSource);
+
+      // Translation-memory flywheel: capture every human-verified CORRECTION
+      // (previously TM was only written on /review approval, missing the most
+      // common signal — a human editing a cell). Source language is the
+      // project's default (not hardcoded "en"), so non-English-source projects
+      // also feed the corpus. Held (pending) regulated edits and source-language
+      // edits are skipped; TM capture must never fail the edit.
+      if (writeSource === "human" && newValue.trim()) {
+        try {
+          const proj = await Project.findById(translation.projectId);
+          const sourceLang = proj?.defaultLanguage || "en";
+          if (editedLang !== sourceLang) {
+            const sourceText = readValue(
+              translation.translations as any,
+              sourceLang,
+              DEFAULT_REGISTER
+            );
+            if (sourceText && sourceText.trim()) {
+              await TranslationMemory.findOneAndUpdate(
+                { projectId: translation.projectId, lang: editedLang, register: editedRegister, sourceText },
+                {
+                  translatedText: newValue,
+                  key: translation.key,
+                  context: translation.context || undefined,
+                  createdAt: new Date(),
+                },
+                { upsert: true }
+              );
+            }
+          }
+        } catch (_) {
+          /* non-critical */
+        }
+      }
     }
 
-    if (source) translation.source = source;
+    // Row-level `source` is no longer client-controllable. Per-cell sources
+    // are stamped above ("human" for the edited cell). The legacy row-level
+    // field stays whatever the create/import path set it to. AI drafts go
+    // through /ai-translate, approvals through /review.
     if (context !== undefined) translation.context = context?.trim();
 
     // Compliance lock — owner-only flip. mandatedBy citation can be edited by
@@ -758,11 +840,21 @@ router.post(
         } catch (_) { /* non-critical */ }
       }
 
+      // Keys the model didn't return (truncation, script-guard drop, batch
+      // error) are reported back instead of being silently lost.
+      const failedKeys = toTranslate
+        .filter((t) => !aiResults[t.key])
+        .map((t) => t.key);
+
       return sendSuccess(res, 200, {
-        message: `AI translated ${translatedKeys.length} keys to ${targetLangName} (${targetRegister})`,
+        message:
+          `AI translated ${translatedKeys.length} key(s) to ${targetLangName} (${targetRegister})` +
+          (failedKeys.length ? `, ${failedKeys.length} failed` : ""),
         translated: translatedKeys.length,
+        failed: failedKeys.length,
         register: targetRegister,
         keys: translatedKeys,
+        failedKeys,
       });
     } catch (e: any) {
       console.error("[BhashaJS] AI translation error:", e.message);
@@ -799,8 +891,16 @@ router.post("/:id/review", async (req: AuthRequest, res: Response) => {
     });
     if (!member) return sendError(res, 403, "Not authorized for this project");
     if (member.role === "viewer") return sendError(res, 403, "Viewers cannot review translations");
-    if (member.role === "translator" && member.assignedLanguages.length > 0 && !member.assignedLanguages.includes(lang)) {
+    if (member.role === "translator" && !member.assignedLanguages.includes(lang)) {
       return sendError(res, 403, `You are not assigned to translate "${lang}"`);
+    }
+
+    // Compliance lock: only an owner may approve/reject a regulated key.
+    // Otherwise a translator could self-approve their own "pending" edit to a
+    // regulated cell ("pending" -> "approved") and the SDK would serve it —
+    // defeating the lock. Owner is the sole approval authority for regulated keys.
+    if ((translation as any).regulated && member.role !== "owner") {
+      return sendError(res, 403, "Only project owners can review (approve/reject) regulated keys");
     }
 
     const translatedValue = readValue(translation.translations as any, lang, register);
@@ -819,10 +919,14 @@ router.post("/:id/review", async (req: AuthRequest, res: Response) => {
 
       // Memory is stratified by register so an approved "casual" pair
       // doesn't leak into "formal" suggestions.
-      const englishText = readValue(translation.translations as any, "en", DEFAULT_REGISTER);
-      if (englishText) {
+      // Source language is the project's default (not hardcoded "en"), so
+      // non-English-source projects build a corpus too.
+      const proj = await Project.findById(translation.projectId);
+      const sourceLang = proj?.defaultLanguage || "en";
+      const sourceText = readValue(translation.translations as any, sourceLang, DEFAULT_REGISTER);
+      if (sourceText && lang !== sourceLang) {
         await TranslationMemory.findOneAndUpdate(
-          { projectId: translation.projectId, lang, register, sourceText: englishText },
+          { projectId: translation.projectId, lang, register, sourceText },
           {
             translatedText: translatedValue,
             key: translation.key,

@@ -14,6 +14,7 @@ import Project from "../models/Project";
 import Translation from "../models/Translation";
 import { sendSuccess, sendError } from "../utils/response";
 import { coerceRegister, readValue, DEFAULT_REGISTER } from "../utils/registers";
+import { canServe } from "../utils/compliance";
 
 const router = Router();
 
@@ -81,7 +82,13 @@ router.get("/translations", async (req: Request, res: Response) => {
     }
 
     const reg = coerceRegister(register);
-    const translations = await Translation.find({ projectId: project._id });
+    // Project only the fields the bundle + compliance gate need, as lean plain
+    // objects — avoids hydrating full Mongoose docs (including the voice Map) on
+    // every end-user cold-start. The register helpers read plain objects fine.
+    const translations = await Translation.find(
+      { projectId: project._id },
+      "key translations sources regulated"
+    ).lean();
     const flat: Record<string, string> = {};
 
     for (const t of translations) {
@@ -95,6 +102,9 @@ router.get("/translations", async (req: Request, res: Response) => {
       if (value) flat[t.key] = value;
     }
 
+    // Cache for 5 minutes. Express adds a weak ETag from the body, so a CDN or
+    // browser revalidates with a 304 instead of re-downloading the whole bundle.
+    res.set("Cache-Control", "public, max-age=300");
     return sendSuccess(res, 200, flat);
   } catch (e) {
     return sendError(res, 500, "Failed to fetch translations");
@@ -110,16 +120,19 @@ router.get("/translations", async (req: Request, res: Response) => {
 function pickSafe(t: any, lang: string, register: any): string | undefined {
   const value = readValue(t.translations as any, lang, register);
   if (!value) return undefined;
-  if (!t.regulated) return value;
   const source = readValue(t.sources as any, lang, register);
-  if (source === "human" || source === "approved") return value;
-  return undefined;
+  return canServe(!!t.regulated, source) ? value : undefined;
 }
 
 // ─── GET VOICE BUNDLE ─────────────────────────────────────────
 // Returns Record<key, { ipa, ssml }> for one (lang, register).
 // Same as /sdk/translations in shape — the client can decide whether to
 // fetch this lazily (only when entering voice mode) or eagerly.
+//
+// COMPLIANCE LOCK: applies the same human/approved gate as /translations.
+// Voice for a regulated key is only returned if the underlying text cell's
+// source is `human` or `approved`. AI-drafted regulated text never reaches
+// users via either path.
 router.get("/voice", async (req: Request, res: Response) => {
   try {
     const project = (req as any).project;
@@ -134,28 +147,48 @@ router.get("/voice", async (req: Request, res: Response) => {
     }
 
     const reg = coerceRegister(register);
-    const translations = await Translation.find({ projectId: project._id });
+    const translations = await Translation.find(
+      { projectId: project._id },
+      "key sources regulated voice"
+    ).lean();
     const flat: Record<string, { ipa: string; ssml: string }> = {};
 
     for (const t of translations) {
-      const voiceField = (t as any).voice;
-      const langMap = voiceField instanceof Map ? voiceField.get(lang) : voiceField?.[lang];
-      let cell = langMap instanceof Map ? langMap.get(reg) : langMap?.[reg];
-      // Fall back to default register's voice data if requested register is empty.
+      let cell = pickSafeVoice(t, lang, reg);
       if ((!cell || !cell.ipa) && reg !== DEFAULT_REGISTER) {
-        cell = langMap instanceof Map
-          ? langMap.get(DEFAULT_REGISTER)
-          : langMap?.[DEFAULT_REGISTER];
+        cell = pickSafeVoice(t, lang, DEFAULT_REGISTER);
       }
       if (cell && (cell.ipa || cell.ssml)) {
         flat[t.key] = { ipa: cell.ipa || "", ssml: cell.ssml || "" };
       }
     }
 
+    // Cache for 5 minutes. Express adds a weak ETag from the body, so a CDN or
+    // browser revalidates with a 304 instead of re-downloading the whole bundle.
+    res.set("Cache-Control", "public, max-age=300");
     return sendSuccess(res, 200, flat);
   } catch (e) {
     return sendError(res, 500, "Failed to fetch voice bundle");
   }
 });
+
+/**
+ * Read a (lang, register) voice cell, applying the compliance lock against
+ * the underlying text cell's source. Returns undefined for regulated rows
+ * whose text source is not human/approved — voice should never leak past
+ * the same gate the text bundle enforces.
+ */
+function pickSafeVoice(
+  t: any,
+  lang: string,
+  register: any
+): { ipa: string; ssml: string } | undefined {
+  const voiceField = (t as any).voice;
+  const langMap = voiceField instanceof Map ? voiceField.get(lang) : voiceField?.[lang];
+  const cell = langMap instanceof Map ? langMap.get(register) : langMap?.[register];
+  if (!cell) return undefined;
+  const source = readValue(t.sources as any, lang, register);
+  return canServe(!!t.regulated, source) ? cell : undefined;
+}
 
 export default router;

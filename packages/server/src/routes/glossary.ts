@@ -70,13 +70,15 @@ router.put(
   requireProjectRole("owner", "translator"),
   async (req: ProjectAuthRequest, res: Response) => {
     try {
-      const { id } = req.params;
+      const { projectId, id } = req.params;
       const { term, translations, notes } = req.body;
 
       const idError = validateObjectId(id as string, "Glossary ID");
       if (idError) return sendError(res, 400, idError);
 
-      const entry = await GlossaryEntry.findById(id);
+      // Scope by projectId so an owner of project A can't mutate a glossary
+      // entry of project B by guessing/replaying the entry's _id.
+      const entry = await GlossaryEntry.findOne({ _id: id, projectId });
       if (!entry) return sendError(res, 404, "Glossary entry not found");
 
       if (term !== undefined) entry.term = term.trim();
@@ -105,12 +107,12 @@ router.delete(
   requireProjectRole("owner"),
   async (req: ProjectAuthRequest, res: Response) => {
     try {
-      const { id } = req.params;
+      const { projectId, id } = req.params;
 
       const idError = validateObjectId(id as string, "Glossary ID");
       if (idError) return sendError(res, 400, idError);
 
-      const entry = await GlossaryEntry.findByIdAndDelete(id);
+      const entry = await GlossaryEntry.findOneAndDelete({ _id: id, projectId });
       if (!entry) return sendError(res, 404, "Glossary entry not found");
 
       return sendSuccess(res, 200, { message: "Glossary entry deleted" });

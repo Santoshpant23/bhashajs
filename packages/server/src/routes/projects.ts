@@ -51,14 +51,19 @@ router.get("/", async (req: AuthRequest, res: Response) => {
     // Merge role info so the dashboard knows what to show.
     // Strip apiKey for non-owners — translators/viewers should never see the
     // project's secret SDK key, even though the UI already hides it.
-    const roleMap = new Map(
-      memberships.map((m) => [m.projectId.toString(), m.role])
+    const memberMap = new Map(
+      memberships.map((m) => [m.projectId.toString(), m])
     );
     const enriched = projects.map((p) => {
       const obj: any = p.toObject();
-      const role = roleMap.get(p._id.toString());
-      if (role !== "owner") delete obj.apiKey;
-      obj.myRole = role;
+      const m = memberMap.get(p._id.toString());
+      if (m?.role !== "owner") delete obj.apiKey;
+      obj.myRole = m?.role;
+      // Owner-only languages aren't a thing — owners implicitly get all.
+      // For translators/viewers we surface the explicit assignment list so
+      // the dashboard can disable cells they can't edit (UI-side mirror of
+      // the server's per-language gate).
+      obj.myAssignedLanguages = m?.assignedLanguages || [];
       return obj;
     });
 
@@ -126,6 +131,7 @@ router.get(
       const obj: any = project.toObject();
       if (req.membership?.role !== "owner") delete obj.apiKey;
       obj.myRole = req.membership?.role;
+      obj.myAssignedLanguages = req.membership?.assignedLanguages || [];
       return sendSuccess(res, 200, obj);
     } catch (e) {
       return sendError(res, 500, "Failed to fetch project");

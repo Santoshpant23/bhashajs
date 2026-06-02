@@ -134,13 +134,15 @@ router.put(
   requireProjectRole("owner"),
   async (req: ProjectAuthRequest, res: Response) => {
     try {
-      const { memberId } = req.params;
+      const { projectId, memberId } = req.params;
       const { role, assignedLanguages } = req.body;
 
       const idError = validateObjectId(memberId as string, "Member ID");
       if (idError) return sendError(res, 400, idError);
 
-      const member = await ProjectMember.findById(memberId);
+      // Scope by both _id AND projectId so an owner of project A can't mutate
+      // a member of project B even if they discover the member's _id.
+      const member = await ProjectMember.findOne({ _id: memberId, projectId });
       if (!member) return sendError(res, 404, "Member not found");
 
       // Cannot change owner's role
@@ -169,12 +171,13 @@ router.delete(
   requireProjectRole("owner"),
   async (req: ProjectAuthRequest, res: Response) => {
     try {
-      const { memberId } = req.params;
+      const { projectId, memberId } = req.params;
 
       const idError = validateObjectId(memberId as string, "Member ID");
       if (idError) return sendError(res, 400, idError);
 
-      const member = await ProjectMember.findById(memberId);
+      // Same projectId scoping as the PUT route — prevents cross-tenant deletes.
+      const member = await ProjectMember.findOne({ _id: memberId, projectId });
       if (!member) return sendError(res, 404, "Member not found");
 
       // Cannot remove the owner
@@ -182,7 +185,7 @@ router.delete(
         return sendError(res, 400, "Cannot remove the project owner");
       }
 
-      await ProjectMember.findByIdAndDelete(memberId);
+      await member.deleteOne();
 
       return sendSuccess(res, 200, { message: "Member removed" });
     } catch (e) {
@@ -202,28 +205,14 @@ router.post("/team/accept-invite", async (req: AuthRequest, res: Response) => {
     const tokenError = validateRequired(token, "Invite token");
     if (tokenError) return sendError(res, 400, tokenError);
 
-    // First try to find by the live token (the normal pending → active flow).
-    let member = await ProjectMember.findOne({ inviteToken: token });
-
-    // Fallback: the membership may have been auto-claimed at registration,
-    // which clears the token. In that case, find the active membership for
-    // this user and project. We can't look up by token here (it's gone), so we
-    // look for *any* active membership the user has — but that's too broad.
-    // Instead, accept that the redirected URL sent us here, and trust the
-    // JWT user. If they have any active membership, treat the visit as a
-    // confirmation that the auto-claim worked.
+    // The token is the durable invite ID — we keep it on the membership even
+    // after activation so this lookup works idempotently for re-clicks.
+    const member = await ProjectMember.findOne({ inviteToken: token });
     if (!member) {
-      // Token has been consumed. Look for the most recent active membership
-      // for this user as a graceful landing.
-      member = await ProjectMember.findOne({
-        userId: req.userId,
-        status: "active",
-      }).sort({ createdAt: -1 });
+      return sendError(res, 404, "Invalid or expired invite link");
+    }
 
-      if (!member) {
-        return sendError(res, 404, "Invalid or expired invite link");
-      }
-    } else if (member.status !== "active") {
+    if (member.status !== "active") {
       // Live token, not yet activated. Before binding it to the requester, make
       // sure the JWT user's email matches the invite's email. Otherwise a user
       // who happens to be logged into another account in the same browser would
@@ -239,7 +228,7 @@ router.post("/team/accept-invite", async (req: AuthRequest, res: Response) => {
       }
       member.userId = req.userId as any;
       member.status = "active";
-      member.inviteToken = null;
+      // inviteToken stays — see auth.ts for the rationale.
       await member.save();
     } else {
       // Already active. If userId doesn't match the requester, security issue.

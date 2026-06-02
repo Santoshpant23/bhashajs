@@ -58,6 +58,13 @@ router.post("/register", async (req: Request, res: Response) => {
     // active member — the dashboard would show empty and the owner would still
     // see them as "pending".
     try {
+      // Keep `inviteToken` populated even after auto-claim. It stops being a
+      // "consume me" credential the moment status flips to "active" (because
+      // accept-invite below verifies the requester owns the membership), and
+      // keeping it around lets accept-invite respond idempotently when the
+      // user clicks the email link AFTER signup auto-claimed the membership.
+      // Clearing it used to leave the route with no way to look up the
+      // membership and forced a dangerous "any active membership" fallback.
       await ProjectMember.updateMany(
         {
           email: user.email,
@@ -66,7 +73,6 @@ router.post("/register", async (req: Request, res: Response) => {
         },
         {
           $set: { userId: user._id, status: "active" },
-          $unset: { inviteToken: "" },
         }
       );
     } catch (_) {
