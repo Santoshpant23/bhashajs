@@ -119,6 +119,10 @@ interface Project {
   supportedLanguages: string[];
   defaultLanguage: string;
   myRole?: string; // "owner" | "translator" | "viewer"
+  // For translators: list of language codes the user is assigned to.
+  // Owners get an empty array here (they can edit everything by role).
+  // We use this to disable cells the server would 403 on anyway.
+  myAssignedLanguages?: string[];
 }
 
 interface GlossaryEntry {
@@ -253,7 +257,6 @@ export default function TranslationEditor() {
   // Track unsaved changes
   const [hasUnsaved, setHasUnsaved] = useState(false);
   const unsavedRef = useRef(false);
-  const lastEditedLangRef = useRef<string | undefined>(undefined);
 
   // Add key modal
   const [showAddKey, setShowAddKey] = useState(false);
@@ -479,25 +482,38 @@ export default function TranslationEditor() {
 
   // Update local state when user types in a cell — only the active register's
   // cell is modified, never disturbing other registers.
+  //
+  // English is locked to the "default" register everywhere — both reads and
+  // writes. Without this, editing the English column while the user is on the
+  // formal/casual tab would write the new English value into formal/casual and
+  // leave the actual `default` cell stale, then reads in default would show
+  // empty. The bug surfaced as "I edited English and my casual translations
+  // disappeared" once the user switched registers.
+  function effectiveRegister(lang: string): Register {
+    return lang === "en" ? "default" : currentRegister;
+  }
+
   function handleValueChange(translationId: string, lang: string, value: string) {
     setHasUnsaved(true);
-    lastEditedLangRef.current = lang;
+    const reg = effectiveRegister(lang);
     setTranslations((prev) =>
-      prev.map((t) => (t._id === translationId ? withValue(t, lang, currentRegister, value) : t))
+      prev.map((t) => (t._id === translationId ? withValue(t, lang, reg, value) : t))
     );
   }
 
   // Save to server when user clicks out of a cell (onBlur). The server only
   // touches the (editedLang, editedRegister) cell, so we send just that pair.
+  // Caller passes the actual edited language — we derive its effective
+  // register here so English always saves to "default".
   async function saveTranslation(translation: Translation, editedLang?: string) {
     setSaving(translation._id);
+    const editedRegister = editedLang ? effectiveRegister(editedLang) : currentRegister;
     try {
       await api.put(`/translations/${translation._id}`, {
         translations: translation.translations,
         context: translation.context,
-        source: "human",
         editedLang,
-        editedRegister: currentRegister,
+        editedRegister,
       });
       // Update local state to reflect the per-(lang, register) source change
       setTranslations((prev) =>
@@ -507,7 +523,7 @@ export default function TranslationEditor() {
           if (editedLang) {
             updatedSources[editedLang] = {
               ...(updatedSources[editedLang] || {}),
-              [currentRegister]: "human",
+              [editedRegister]: "human",
             };
           }
           return { ...t, source: "human", sources: updatedSources };
@@ -561,6 +577,13 @@ export default function TranslationEditor() {
 
   async function handleAITranslate() {
     if (!aiTargetLang) return;
+    // Stale state can hold a value that's no longer in the user's
+    // assignedLanguages (e.g. owner unassigned them while the modal was open).
+    // Bail with a clear toast rather than firing a request the server will 403.
+    if (!canEditLang(aiTargetLang)) {
+      showToast(`You're not assigned to translate ${LANG_NAMES[aiTargetLang] || aiTargetLang}.`, "error");
+      return;
+    }
     setAITranslating(true);
     setAIResult(null);
 
@@ -743,6 +766,10 @@ export default function TranslationEditor() {
 
   async function generateVoiceForLang(lang: string) {
     if (!projectId) return;
+    if (!canEditLang(lang)) {
+      showToast(`You're not assigned to translate ${LANG_NAMES[lang] || lang}.`, "error");
+      return;
+    }
     setGeneratingVoice(true);
     try {
       const res = await api.post(`/translations/${projectId}/generate-voice`, {
@@ -909,13 +936,28 @@ export default function TranslationEditor() {
   const myRole = project?.myRole || "owner";
   const isOwner = myRole === "owner";
   const isViewer = myRole === "viewer";
-  const assignedLangs = new Set<string>(); // populated from membership if translator
-  // For now, translators can edit any language (backend enforces per-language restriction)
-  const canEditLang = (lang: string) => !isViewer;
+  const isTranslator = myRole === "translator";
+  // Translator's assigned languages from server. Owners ignore this list (they
+  // can edit anything). Empty list for a translator means "no languages
+  // assigned yet" — they get a read-only view until an owner assigns some.
+  const assignedLangs = new Set<string>(project?.myAssignedLanguages || []);
+  const canEditLang = (lang: string) => {
+    if (isViewer) return false;
+    if (isTranslator) return assignedLangs.has(lang);
+    return true;
+  };
+  // Languages this user can actually take action on. Used to gate AI translate,
+  // import, voice generation, and glossary editing so the dropdown only ever
+  // contains options the server would accept — no more "select fr → 403".
+  const editableLangs = (project?.supportedLanguages || []).filter(canEditLang);
 
   // ─── Import ──────────────────────────────────────────────────
 
   async function handleImport() {
+    if (!canEditLang(importLang)) {
+      showToast(`You're not assigned to translate ${LANG_NAMES[importLang] || importLang}.`, "error");
+      return;
+    }
     try {
       const data = JSON.parse(importJson);
       if (typeof data !== "object" || Array.isArray(data)) {
@@ -1464,17 +1506,21 @@ export default function TranslationEditor() {
         {voiceMode && project && !isViewer && (
           <div className="voice-bar">
             <span className="voice-bar-label">Generate voice for:</span>
-            {project.supportedLanguages.map((lang) => (
-              <button
-                key={lang}
-                className="voice-gen-btn"
-                onClick={() => generateVoiceForLang(lang)}
-                disabled={generatingVoice}
-                title={`Generate IPA + SSML for ${LANG_NAMES[lang] || lang} (${currentRegister})`}
-              >
-                {LANG_NAMES[lang] || lang}
-              </button>
-            ))}
+            {editableLangs.length === 0 ? (
+              <span className="voice-bar-status">No languages assigned to you yet.</span>
+            ) : (
+              editableLangs.map((lang) => (
+                <button
+                  key={lang}
+                  className="voice-gen-btn"
+                  onClick={() => generateVoiceForLang(lang)}
+                  disabled={generatingVoice}
+                  title={`Generate IPA + SSML for ${LANG_NAMES[lang] || lang} (${currentRegister})`}
+                >
+                  {LANG_NAMES[lang] || lang}
+                </button>
+              ))
+            )}
             {generatingVoice && <span className="voice-bar-status">Generating…</span>}
           </div>
         )}
@@ -1652,7 +1698,7 @@ export default function TranslationEditor() {
                   onChange={(e) => { setAITargetLang(e.target.value); setAIResult(null); }}
                   disabled={aiTranslating}
                 >
-                  {project?.supportedLanguages
+                  {editableLangs
                     .filter((l) => l !== "en")
                     .map((lang) => (
                       <option key={lang} value={lang}>
@@ -1660,6 +1706,12 @@ export default function TranslationEditor() {
                       </option>
                     ))}
                 </select>
+                {editableLangs.filter((l) => l !== "en").length === 0 && (
+                  <span className="form-hint">
+                    You don't have any non-English languages assigned to translate.
+                    Ask the project owner to assign you in Team settings.
+                  </span>
+                )}
               </div>
               {aiTargetLang && (
                 <div className="ai-modal-info">
@@ -1706,7 +1758,7 @@ export default function TranslationEditor() {
               <div className="form-group">
                 <label>Language</label>
                 <select value={importLang} onChange={(e) => setImportLang(e.target.value)}>
-                  {project?.supportedLanguages.map((lang) => (
+                  {editableLangs.map((lang) => (
                     <option key={lang} value={lang}>{LANG_NAMES[lang] || lang}</option>
                   ))}
                 </select>
@@ -1803,7 +1855,7 @@ export default function TranslationEditor() {
                                   className="glossary-cell-input"
                                   value={g.translations[lang] || ""}
                                   placeholder={`${LANG_NAMES[lang]}...`}
-                                  disabled={isViewer}
+                                  disabled={!canEditLang(lang)}
                                   onBlur={(e) => {
                                     const val = e.target.value;
                                     if (val !== (g.translations[lang] || "")) {
@@ -2007,7 +2059,7 @@ export default function TranslationEditor() {
                               value={cellValue}
                               onChange={(e) => handleValueChange(t._id, lang, e.target.value)}
                               onFocus={() => handleCellFocus(t._id, lang, cellValue)}
-                              onBlur={() => { saveTranslation(t, lastEditedLangRef.current); setCellFocused(false); }}
+                              onBlur={() => { saveTranslation(t, lang); setCellFocused(false); }}
                               onKeyDown={(e) => handleCellKeyDown(e, t, lang)}
                               placeholder={`${LANG_NAMES[lang] || lang}...`}
                               dir={RTL_LANGS.has(lang) ? "rtl" : "ltr"}

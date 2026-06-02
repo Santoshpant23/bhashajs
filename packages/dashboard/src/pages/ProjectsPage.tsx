@@ -484,7 +484,6 @@ export default function ProjectsPage() {
 
 <I18nProvider
   projectKey="${editingProject.apiKey || "bjs_your_key_here"}"
-  apiUrl="${window.location.origin}/api"
   defaultLang="en"
 >
   <App />

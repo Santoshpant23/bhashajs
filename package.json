@@ -14,7 +14,6 @@
     "build:sdk": "cd packages/sdk && npm run build",
     "build": "npm run build:server && npm run build:dashboard && npm run build:sdk",
     "test:sdk": "cd packages/sdk && npm test",
-    "test:e2e": "cd packages/server && node test-e2e.mjs",
     "test": "npm run test:sdk",
     "docker:up": "docker compose up --build -d",
     "docker:down": "docker compose down"

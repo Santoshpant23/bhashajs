@@ -10,9 +10,7 @@ Plus your existing **MongoDB Atlas** stays where it is.
 
 ---
 
-## 0. Before anything: publish `bhasha-js@0.1.0-beta.2` to npm
-
-The fixed SDK is ready. Build is verified, all 188 tests pass.
+## 0. Before anything: publish `bhasha-js@0.2.1` to npm
 
 ```bash
 cd packages/sdk
@@ -21,13 +19,13 @@ cd packages/sdk
 npm login
 
 # Publish — the version, build, and tarball are all ready
-npm publish --tag beta
+npm publish
 ```
 
 Verify:
 ```bash
-npm view bhasha-js@beta
-# Should show 0.1.0-beta.2
+npm view bhasha-js version
+# Should show 0.2.1
 ```
 
 ---

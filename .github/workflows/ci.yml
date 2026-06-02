@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [master, next-version-craft]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build SDK
+        run: npm run build --workspace bhasha-js
+
+      - name: Test SDK
+        run: npm test --workspace bhasha-js
+
+      - name: Typecheck server
+        run: npm run typecheck --workspace bhashajs-server
+
+      - name: Test server
+        run: npm test --workspace bhashajs-server

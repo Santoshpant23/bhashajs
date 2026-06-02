@@ -5,7 +5,7 @@
 # ─────────────────────────────────────────────────────────────
 set -e
 
-DOMAIN="bhashajs.tech"
+DOMAIN="bhashajs.com"
 EMAIL="${1:?Usage: ./deploy.sh your-email@example.com}"
 
 echo "=== BhashaJS Deployment ==="
@@ -13,7 +13,7 @@ echo "Domain: $DOMAIN"
 echo "Email:  $EMAIL"
 echo ""
 
-# ── Step 1: Check .env exists ────────────────────────────────
+# ── Pre-flight: Check .env exists ────────────────────────────
 if [ ! -f .env ]; then
   echo "ERROR: .env file not found!"
   echo "Copy .env.example to .env and fill in your secrets first."
@@ -22,26 +22,23 @@ if [ ! -f .env ]; then
   exit 1
 fi
 
-# ── Step 2: Use init config (HTTP-only) for cert bootstrap ───
-echo ">>> Step 1/4: Starting with HTTP-only config for SSL bootstrap..."
-docker exec bhashajs-dashboard-1 sh -c \
-  "cp /etc/nginx/nginx.init.conf /etc/nginx/conf.d/default.conf && nginx -s reload" 2>/dev/null \
-  || true
-
-# Build and start all services
+# ── Step 1: Build and start all services ────────────────────
+# (The previous version tried to `docker exec` the dashboard container here,
+#  before `docker compose up` had created it — a no-op that failed silently.)
+echo ">>> Step 1/4: Building and starting services..."
 docker compose up -d --build
 
 echo ">>> Waiting for services to start..."
 sleep 5
 
-# ── Step 3: Swap to init config inside running container ─────
+# ── Step 2: Swap to init config inside running container ─────
 echo ">>> Step 2/4: Switching nginx to init config..."
 docker compose exec dashboard sh -c \
   "cp /etc/nginx/nginx.init.conf /etc/nginx/conf.d/default.conf && nginx -s reload"
 
 sleep 2
 
-# ── Step 4: Get SSL certificate ─────────────────────────────
+# ── Step 3: Get SSL certificate ─────────────────────────────
 echo ">>> Step 3/4: Requesting SSL certificate from Let's Encrypt..."
 docker compose run --rm certbot certonly \
   --webroot \
@@ -52,7 +49,7 @@ docker compose run --rm certbot certonly \
   -d "$DOMAIN" \
   -d "www.$DOMAIN"
 
-# ── Step 5: Switch to full SSL config ────────────────────────
+# ── Step 4: Switch to full SSL config ────────────────────────
 echo ">>> Step 4/4: Enabling HTTPS..."
 docker compose exec dashboard sh -c \
   "cp /etc/nginx/nginx.init.conf /etc/nginx/conf.d/default.conf.bak 2>/dev/null; true"

@@ -1,0 +1,25 @@
+# Keep build context small and never bake secrets / local artifacts into image layers.
+node_modules
+**/node_modules
+dist
+**/dist
+build
+**/build
+coverage
+**/coverage
+
+# Secrets and local env — must never reach an image layer.
+.env
+.env.*
+**/.env
+**/.env.*
+
+# VCS and tooling
+.git
+.gitignore
+.github
+*.log
+.DS_Store
+
+# Analysis / planning scratch
+.bhasha-analysis

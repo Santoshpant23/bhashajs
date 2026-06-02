@@ -25,7 +25,7 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       JWT_EXPIRY: ${JWT_EXPIRY:-7d}
       GEMINI_API_KEY: ${GEMINI_API_KEY}
-      CORS_ORIGIN: ${CORS_ORIGIN:-https://bhashajs.tech}
+      CORS_ORIGIN: ${CORS_ORIGIN:-https://bhashajs.com}
       AI_PROVIDER: ${AI_PROVIDER:-gemini}
 
   dashboard:
