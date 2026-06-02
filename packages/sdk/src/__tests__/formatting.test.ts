@@ -190,4 +190,57 @@ describe("formatDate", () => {
       expect(result).toContain("2026");
     });
   });
+
+  describe("invalid input (regression)", () => {
+    it("returns empty string instead of the literal 'Invalid Date'", () => {
+      expect(formatDate("not-a-date", "hi")).toBe("");
+      expect(formatDate("2026-13-45", "hi")).toBe("");
+      expect(formatDate(NaN, "hi")).toBe("");
+    });
+
+    it("still formats valid dates", () => {
+      expect(formatDate("2026-03-19", "hi")).toContain("2026");
+    });
+  });
+});
+
+// ─── South Asian grouping for PKR / LKR (regression) ────────────
+// Intl falls back to Western 3-digit grouping for ur-PK and si-LK; the SDK
+// reassembles these into lakh/crore so every supported South Asian currency
+// groups consistently.
+
+describe("South Asian grouping (PKR / LKR)", () => {
+  it("Urdu number groups lakh/crore, not Western", () => {
+    expect(formatNumber(1234567, "ur")).toBe("12,34,567");
+  });
+
+  it("Sinhala number groups lakh/crore", () => {
+    expect(formatNumber(1234567, "si")).toBe("12,34,567");
+  });
+
+  it("Urdu currency (PKR) groups lakh/crore", () => {
+    const r = formatCurrency(1234567, "ur");
+    expect(r).toContain("12,34,567");
+    expect(r).not.toContain("1,234,567");
+  });
+
+  it("Sinhala currency (LKR) groups lakh/crore", () => {
+    const r = formatCurrency(1234567, "si");
+    expect(r).toContain("12,34,567");
+    expect(r).not.toContain("1,234,567");
+  });
+
+  it("no regression for hi/bn/ta/en/ne", () => {
+    expect(formatNumber(1234567, "hi")).toBe("12,34,567");
+    expect(formatNumber(1234567, "bn")).toBe("12,34,567");
+    expect(formatNumber(1234567, "ta")).toBe("12,34,567");
+    expect(formatNumber(1234567, "en")).toBe("12,34,567");
+    expect(formatNumber(1234567, "ne")).toBe("12,34,567");
+  });
+
+  it("native digits still work with reassembled grouping (Urdu)", () => {
+    const r = formatNumber(1234567, "ur", undefined, { useNativeDigits: true });
+    // Urdu uses arabext digits; grouping separators preserved between them.
+    expect(r).toMatch(/[٠-٩۰-۹]/);
+  });
 });

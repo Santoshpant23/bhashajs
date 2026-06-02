@@ -369,13 +369,21 @@ export class TranslationClient {
       return key;
     }
 
-    // Handle interpolation: replace {name} with actual values
+    // Handle interpolation: replace {name} with actual values.
+    //
+    // We use a literal split/join rather than `String.replace(RegExp, value)`
+    // on purpose. The RegExp approach had two real bugs:
+    //   1. The param KEY was spliced raw into a RegExp source, so a key
+    //      containing a metacharacter (e.g. "a(b") threw a SyntaxError and
+    //      crashed the render; a key like "a.b" silently failed to match.
+    //   2. The param VALUE was used as the replacement string, so values
+    //      containing `$&`, `$1`, `` $` ``, `$$` were reinterpreted as
+    //      replacement patterns and silently corrupted the output.
+    // split(literal).join(literal) treats both key and value as plain text,
+    // fixing both at once and supporting arbitrary param keys.
     if (params) {
       for (const [paramKey, paramValue] of Object.entries(params)) {
-        result = result.replace(
-          new RegExp(`\\{${paramKey}\\}`, "g"),
-          String(paramValue)
-        );
+        result = result.split(`{${paramKey}}`).join(String(paramValue));
       }
     }
 

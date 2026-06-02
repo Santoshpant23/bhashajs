@@ -90,6 +90,42 @@ describe("TranslationClient", () => {
     });
   });
 
+  describe("translate — interpolation edge cases (regression)", () => {
+    it("value containing $& is inserted literally, not as a replacement pattern", () => {
+      client.preload({ en: { greeting: "Hello {name}" } });
+      expect(client.translate("greeting", "en", "default", { name: "$& world" })).toBe(
+        "Hello $& world"
+      );
+    });
+
+    it("value containing $1 and $$ is inserted literally", () => {
+      client.preload({ en: { code: "Coupon: {c}" } });
+      expect(client.translate("code", "en", "default", { c: "$1OFF $$" })).toBe(
+        "Coupon: $1OFF $$"
+      );
+    });
+
+    it("param key with regex metacharacters does not throw and replaces literally", () => {
+      client.preload({ en: { weird: "x {a(b} y" } });
+      expect(() =>
+        client.translate("weird", "en", "default", { "a(b": "Z" })
+      ).not.toThrow();
+      expect(client.translate("weird", "en", "default", { "a(b": "Z" })).toBe("x Z y");
+    });
+
+    it("dotted param key matches the literal placeholder", () => {
+      client.preload({ en: { d: "val {a.b}" } });
+      expect(client.translate("d", "en", "default", { "a.b": "1" })).toBe("val 1");
+    });
+
+    it("missing param leaves the placeholder untouched", () => {
+      client.preload({ en: { g: "Hi {name}, {extra} left" } });
+      expect(client.translate("g", "en", "default", { name: "Asha" })).toBe(
+        "Hi Asha, {extra} left"
+      );
+    });
+  });
+
   describe("translate — fallback chains", () => {
     beforeEach(() => {
       client.preload({

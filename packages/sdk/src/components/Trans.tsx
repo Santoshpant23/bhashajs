@@ -22,10 +22,11 @@
 
 import { createElement, ElementType } from "react";
 import { useTranslation } from "../hooks/useTranslation";
+import type { BhashaKey } from "../types";
 
 interface TransProps {
-  /** The translation key */
-  id: string;
+  /** The translation key (type-safe once `bhasha pull` has run) */
+  id: BhashaKey;
   /** Interpolation parameters */
   params?: Record<string, string | number>;
   /** Render as a specific HTML element (default: "span") */

@@ -1,6 +1,6 @@
 {
   "name": "bhasha-js",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "React i18n built for South Asian languages — Hindi, Bengali, Urdu, Tamil, Telugu, Marathi, Punjabi, Gujarati, Kannada, Malayalam, Nepali, Sinhala — with auto RTL, lakh/crore numbers, native digits, region-aware currency, and CLDR plurals.",
   "author": "Santosh",
   "license": "MIT",
@@ -15,12 +15,26 @@
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "bhasha": "./dist/cli.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
       "require": "./dist/index.js"
-    }
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.mjs",
+      "require": "./dist/server.js"
+    },
+    "./vanilla": {
+      "types": "./dist/vanilla.d.ts",
+      "import": "./dist/vanilla.mjs",
+      "require": "./dist/vanilla.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
@@ -86,13 +100,24 @@
     "rupee",
     "taka",
     "i18next-alternative",
-    "react-intl-alternative"
+    "react-intl-alternative",
+    "nextjs",
+    "react-server-components",
+    "vue-i18n",
+    "svelte-i18n",
+    "vanilla-js",
+    "type-safe",
+    "cli",
+    "transliteration",
+    "hinglish",
+    "romanized"
   ],
   "peerDependencies": {
     "react": ">=17.0.0",
     "react-dom": ">=17.0.0"
   },
   "devDependencies": {
+    "@types/node": "^20.19.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "react": "^18.3.1",

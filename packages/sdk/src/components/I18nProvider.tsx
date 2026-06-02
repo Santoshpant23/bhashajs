@@ -37,9 +37,10 @@ interface I18nProviderProps extends BhashaConfig {
   children: ReactNode;
 }
 
-// Default API URL — points at the hosted BhashaJS service.
-// Override with `apiUrl` prop if you self-host.
-const DEFAULT_API_URL = "https://api.bhashajs.com";
+// Default API URL — points at the hosted BhashaJS service. The `/api` suffix
+// matches the server's mount point (sdk routes live at `/api/sdk/*`).
+// Override with `apiUrl` prop if you self-host (e.g. "https://my.host/api").
+const DEFAULT_API_URL = "https://api.bhashajs.com/api";
 
 const DEFAULT_REGISTER: Register = "default";
 
@@ -82,6 +83,13 @@ export function I18nProvider({
 
   // useRef to hold the client so it persists across renders
   const clientRef = useRef<TranslationClient | null>(null);
+
+  // Monotonic request ids so a slow earlier fetch can't overwrite the state
+  // committed by a newer switch (last-*requested* wins, not last-*resolved*).
+  // Language and register are independent dimensions, so each gets its own
+  // counter — switching language then register must let both commit.
+  const langReqRef = useRef(0);
+  const registerReqRef = useRef(0);
 
   // Create the client once on mount
   if (!clientRef.current) {
@@ -158,12 +166,28 @@ export function I18nProvider({
     async (newLang: string) => {
       if (newLang === currentLang) return;
 
+      const reqId = ++langReqRef.current;
       setIsLoading(true);
       await client.fetchTranslations(newLang, currentRegister);
       // Pre-warm default register for register-fallback if needed.
       if (currentRegister !== DEFAULT_REGISTER) {
         await client.fetchTranslations(newLang, DEFAULT_REGISTER);
       }
+      // Voice mode: keep the IPA/SSML bundle in sync with the active language.
+      // Without this, formatPhonetic/formatSSML would return empty strings for
+      // every key after a language switch until the next remount.
+      if (voiceEnabled) {
+        await client.fetchVoice(newLang, currentRegister);
+        if (currentRegister !== DEFAULT_REGISTER) {
+          await client.fetchVoice(newLang, DEFAULT_REGISTER);
+        }
+      }
+
+      // A newer setLang superseded this one while we were fetching — let it
+      // own the loading state and the committed language. Bailing here is what
+      // stops a slow "hi" fetch from clobbering a newer "bn" selection.
+      if (reqId !== langReqRef.current) return;
+
       setIsLoading(false);
 
       loadFontForLang(newLang);
@@ -172,7 +196,7 @@ export function I18nProvider({
 
       onLanguageChange?.(newLang);
     },
-    [currentLang, currentRegister, client, onLanguageChange]
+    [currentLang, currentRegister, client, voiceEnabled, onLanguageChange]
   );
 
   // ─── Register Switching ──────────────────────────────────────
@@ -181,15 +205,24 @@ export function I18nProvider({
     async (newRegister: Register) => {
       if (newRegister === currentRegister) return;
 
+      const reqId = ++registerReqRef.current;
       // Fetch the new register bundle for the current lang (and English
       // fallback) so the switch is instant once the network round-trips.
       setIsLoading(true);
       await client.fetchTranslations(currentLang, newRegister);
+      // Voice bundle has to follow the register the same way text does.
+      if (voiceEnabled) {
+        await client.fetchVoice(currentLang, newRegister);
+      }
+
+      // Superseded by a newer register/segment switch — don't commit stale state.
+      if (reqId !== registerReqRef.current) return;
+
       setIsLoading(false);
 
       setCurrentRegister(newRegister);
     },
-    [currentLang, currentRegister, client]
+    [currentLang, currentRegister, client, voiceEnabled]
   );
 
   // ─── Segment Switching ───────────────────────────────────────
@@ -204,13 +237,21 @@ export function I18nProvider({
       setCurrentSegment(newSegment);
       const mapped = segmentRules?.[newSegment];
       if (mapped && mapped !== currentRegister) {
+        const reqId = ++registerReqRef.current;
         setIsLoading(true);
         await client.fetchTranslations(currentLang, mapped);
+        if (voiceEnabled) {
+          await client.fetchVoice(currentLang, mapped);
+        }
+
+        // Superseded by a newer register/segment switch — don't commit stale state.
+        if (reqId !== registerReqRef.current) return;
+
         setIsLoading(false);
         setCurrentRegister(mapped);
       }
     },
-    [currentLang, currentRegister, client, segmentRules]
+    [currentLang, currentRegister, client, voiceEnabled, segmentRules]
   );
 
   // ─── The t() function ────────────────────────────────────────
@@ -315,6 +356,10 @@ export function resolveRegisterFromSegment(
  * 3. Sets a CSS variable --bhasha-font — developers can use this in their CSS
  */
 function applyLangToDocument(lang: string) {
+  // No-op during SSR — there's no document. The provider re-applies on the
+  // client after hydration via the same call path.
+  if (typeof document === "undefined") return;
+
   const langInfo = getLangInfo(lang);
   const html = document.documentElement;
 

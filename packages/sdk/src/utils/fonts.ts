@@ -30,6 +30,10 @@ const loadedFonts = new Set<string>();
  * @param lang - Language code (e.g. "hi", "bn", "ur")
  */
 export function loadFontForLang(lang: string): void {
+  // No-op during server-side rendering — there's no document to inject into.
+  // The font <link> is added on the client after hydration instead.
+  if (typeof document === "undefined") return;
+
   const langInfo = getLangInfo(lang);
   const fontFamily = langInfo.font.split(",")[0].trim();
 

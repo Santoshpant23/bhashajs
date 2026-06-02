@@ -39,7 +39,7 @@ export interface BhashaConfig {
   /**
    * The base URL of your BhashaJS API.
    * Only change this if you self-host the backend.
-   * @default "https://api.bhashajs.com"
+   * @default "https://api.bhashajs.com/api"
    */
   apiUrl?: string;
 
@@ -123,6 +123,37 @@ export interface BhashaConfig {
 export type Register = "default" | "formal" | "casual";
 
 /**
+ * Augmentable registry of a project's translation keys.
+ *
+ * Empty by default — so `BhashaKey` falls back to `string` and nothing breaks.
+ * The `bhasha pull` CLI generates a declaration file that augments this with
+ * your real keys, turning `t()` / `<Trans>` into type-safe, autocompleted,
+ * typo-proof calls:
+ *
+ *   // bhasha-keys.d.ts  (generated — do not edit)
+ *   declare module "bhasha-js" {
+ *     interface BhashaKeyRegistry {
+ *       "hero.title": string;
+ *       "greeting": string;
+ *     }
+ *   }
+ */
+export interface BhashaKeyRegistry {}
+
+/**
+ * The type of a valid translation key. When the registry is empty this is
+ * `string` (zero friction); once `bhasha pull` has populated the registry it
+ * narrows to the exact union of your keys, so a typo is a compile error.
+ *
+ * The `[…] extends […]` tuple wrap is deliberate: it stops the conditional
+ * from distributing over `never`, so the empty-registry case resolves to
+ * `string` rather than collapsing to `never`.
+ */
+export type BhashaKey = [keyof BhashaKeyRegistry] extends [never]
+  ? string
+  : keyof BhashaKeyRegistry;
+
+/**
  * The value provided by I18nContext to all child components.
  * This is what useTranslation() returns internally.
  */
@@ -163,7 +194,7 @@ export interface I18nContextValue {
    * t("greeting", { name: "Rohan" }) does interpolation.
    * t("items_count", { count: 5 }) does pluralization (looks up items_count_one or items_count_other).
    */
-  t: (key: string, params?: Record<string, string | number>) => string;
+  t: (key: BhashaKey, params?: Record<string, string | number>) => string;
 
   /** Whether translations are still being fetched from the API */
   isLoading: boolean;

@@ -99,7 +99,7 @@ Sign up at **[bhashajs.com](https://bhashajs.com)**, create a project, get an AP
 </I18nProvider>
 ```
 
-The SDK fetches translations from `https://api.bhashajs.com` using the `x-api-key` header. Cached in memory after first load — language switching is instant.
+The SDK fetches translations from `https://api.bhashajs.com/api` using the `x-api-key` header. Cached in memory after first load — language switching is instant.
 
 ### Mode 3 · Self-hosted
 
@@ -267,7 +267,7 @@ formatDate(new Date(), "hi", undefined, { preset: "long", useNativeDigits: true 
 | `projectId` + `apiToken` | `string` + `string` | — | JWT auth (advanced). |
 | `preloadedTranslations` | `Record<string, Record<string, string>>` | — | Mode 1 — bundle translations into your app. |
 | `defaultLang` | `string` | `"en"` | Initial language code. |
-| `apiUrl` | `string` | `"https://api.bhashajs.com"` | Override for self-hosting. |
+| `apiUrl` | `string` | `"https://api.bhashajs.com/api"` | Override for self-hosting (e.g. `"https://my.host/api"`). |
 | `region` | `string` | — | Override default region (e.g. `"IN"`, `"BD"`, `"PK"`, `"LK"`, `"NP"`). Affects currency + locale. |
 | `onLanguageChange` | `(lang: string) => void` | — | Callback fired whenever the language changes. |
 
@@ -343,11 +343,41 @@ import {
 
 ## FAQ
 
-**Does this work with Next.js?**
-Yes. Wrap your `app/layout.tsx` with `<I18nProvider>`. For SSR, use `preloadedTranslations` and pass the user's language via cookies/headers.
+**Does this work with Next.js (App Router)?**
+Yes. The main `bhasha-js` entry is already marked `"use client"`, so you can use the provider and hooks in any Client Component. `app/layout.tsx` is a Server Component by default, so put the provider in a small client wrapper:
+
+```tsx
+// app/providers.tsx
+"use client";
+import { I18nProvider } from "bhasha-js";
+
+export function Providers({ children }: { children: React.ReactNode }) {
+  return <I18nProvider projectKey="bjs_..." defaultLang="en">{children}</I18nProvider>;
+}
+```
+
+```tsx
+// app/layout.tsx  (stays a Server Component)
+import { Providers } from "./providers";
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html>
+      <body><Providers>{children}</Providers></body>
+    </html>
+  );
+}
+```
+
+Need the formatters **inside a Server Component** (no provider, no hooks)? Import them from the server-safe entry — it carries no `"use client"` directive:
+
+```tsx
+import { formatCurrency } from "bhasha-js/server"; // ✅ works in a Server Component
+formatCurrency(1234567, "hi"); // "₹12,34,567.00"
+```
 
 **Does this work without React?**
-The core utilities (`formatNumber`, `formatCurrency`, `formatDate`, `getPluralCategory`, etc.) are framework-agnostic. The components/hooks need React 17+.
+Yes — the pure utilities (`formatNumber`, `formatCurrency`, `formatDate`, `getPluralCategory`, `getLangInfo`, …) are framework-agnostic. Import them from `bhasha-js/server` in any non-React / server context. The components and hooks need React 17+.
 
 **How do I integrate AI translation?**
 Use Mode 2 (hosted dashboard) — there's a "Translate with AI" button per language. Or use the `/api/translations/:projectId/ai-translate` endpoint if self-hosted.
@@ -355,8 +385,11 @@ Use Mode 2 (hosted dashboard) — there's a "Translate with AI" button per langu
 **Bundle size?**
 Tree-shakeable ESM. If you only use `formatCurrency` and `formatNumber`, that's what ships. Components and hooks are imported separately.
 
-**Does it work with React Native?**
-The utilities work. The components rely on `document` for RTL switching and Google Fonts loading, so you'd need a thin RN wrapper. Open an issue if this is interesting to you.
+**Does it work with React Native / Vue / Svelte?**
+Yes — import the framework-agnostic engine from `bhasha-js/vanilla`. `BhashaStore` exposes `t()`, the formatters, and `subscribe()` with **no React** and no hard `document` dependency (DOM updates are opt-in and SSR-safe). Wrap it in a Vue composable, a Svelte store, or a React Native context — see the [Vue, Svelte & vanilla guide](https://bhashajs.com/docs/frameworks/).
+
+**Are the translation keys type-safe?**
+Run `npx bhasha pull` and they are — `t()` and `<Trans>` autocomplete your keys and a typo becomes a compile error. With no generated file, keys stay typed as `string`, so it's fully opt-in.
 
 ---
 

@@ -56,4 +56,6 @@ export type {
   CurrencyFormatOptions,
   DateFormatOptions,
   Register,
+  BhashaKey,
+  BhashaKeyRegistry,
 } from "./types";

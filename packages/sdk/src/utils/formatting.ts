@@ -21,6 +21,72 @@
 import { NumberFormatOptions, CurrencyFormatOptions, DateFormatOptions } from "../types";
 import { getLangInfo, resolveRegion } from "./languages";
 
+// ─── South Asian (lakh/crore) grouping ──────────────────────────────
+//
+// Intl groups hi-IN, bn-BD, ta-IN, en-IN, ne-NP correctly as 12,34,567,
+// but some South Asian locales (notably ur-PK for PKR and si-LK for LKR)
+// fall back to Western 3-digit grouping. Rather than trust each locale's
+// CLDR grouping, we reassemble the integer with explicit 2,2,3 grouping for
+// every supported South Asian locale. This is idempotent for the locales
+// Intl already gets right (it produces the identical string), so the result
+// is consistent across the whole language set.
+
+const SOUTH_ASIAN_LANGS = new Set([
+  "en", "hi", "bn", "ur", "ta", "te", "mr", "ne", "pa", "pa-PK",
+  "gu", "kn", "ml", "si",
+  "hi-Latn", "ne-Latn", "ur-Latn", "bn-Latn", "pa-Latn",
+]);
+
+function needsSouthAsianGrouping(lang: string): boolean {
+  if (SOUTH_ASIAN_LANGS.has(lang)) return true;
+  return SOUTH_ASIAN_LANGS.has(lang.split("-")[0]);
+}
+
+/** Regroup a bare digit string into South Asian 2,2,3 grouping. Operates on
+ *  whatever digit glyphs are passed in (Latin or native), so it composes with
+ *  the `-u-nu-<system>` locale extension. */
+function groupSouthAsian(digits: string, sep: string): string {
+  if (digits.length <= 3) return digits;
+  const last3 = digits.slice(-3);
+  let rest = digits.slice(0, -3);
+  const groups: string[] = [];
+  while (rest.length > 2) {
+    groups.unshift(rest.slice(-2));
+    rest = rest.slice(0, -2);
+  }
+  if (rest.length) groups.unshift(rest);
+  return groups.join(sep) + sep + last3;
+}
+
+/** Rebuild an Intl.NumberFormat parts array with South Asian integer grouping,
+ *  preserving sign, currency symbol, decimals, and the original digit glyphs. */
+function reassembleSouthAsianGrouping(parts: Intl.NumberFormatPart[]): string {
+  let sep = ",";
+  let intDigits = "";
+  for (const p of parts) {
+    if (p.type === "integer") intDigits += p.value;
+    else if (p.type === "group") sep = p.value;
+  }
+  const grouped = groupSouthAsian(intDigits, sep);
+
+  let out = "";
+  let mergedInteger = false;
+  for (const p of parts) {
+    if (p.type === "integer") {
+      if (!mergedInteger) {
+        out += grouped;
+        mergedInteger = true;
+      }
+      // subsequent integer parts are already folded into `grouped`
+    } else if (p.type === "group") {
+      // grouping handled above
+    } else {
+      out += p.value;
+    }
+  }
+  return out;
+}
+
 /**
  * Format a number using South Asian conventions.
  *
@@ -65,7 +131,12 @@ export function formatNumber(
   }
 
   try {
-    return new Intl.NumberFormat(locale, intlOptions).format(value);
+    const nf = new Intl.NumberFormat(locale, intlOptions);
+    // Compact notation has no thousands grouping, so skip the reassembly.
+    if (!options?.compact && needsSouthAsianGrouping(lang)) {
+      return reassembleSouthAsianGrouping(nf.formatToParts(value));
+    }
+    return nf.format(value);
   } catch {
     // Fallback to basic formatting if Intl doesn't support the locale
     return value.toLocaleString();
@@ -117,7 +188,11 @@ export function formatCurrency(
   };
 
   try {
-    return new Intl.NumberFormat(locale, intlOptions).format(value);
+    const nf = new Intl.NumberFormat(locale, intlOptions);
+    if (needsSouthAsianGrouping(lang)) {
+      return reassembleSouthAsianGrouping(nf.formatToParts(value));
+    }
+    return nf.format(value);
   } catch {
     // Fallback: basic format with currency code
     return `${currencyCode} ${value.toLocaleString()}`;
@@ -152,6 +227,13 @@ export function formatDate(
 
   // Normalize the date input
   const dateObj = date instanceof Date ? date : new Date(date);
+
+  // Guard against invalid input. Without this, Intl renders the literal
+  // English string "Invalid Date" into every locale's UI — a jarring,
+  // untranslated failure. Return an empty string so the caller decides.
+  if (isNaN(dateObj.getTime())) {
+    return "";
+  }
 
   // Build locale with optional native digits (default to latn for consistency).
   let locale = intlLocale;
