@@ -1,0 +1,83 @@
+---
+import DocLayout from "../../components/DocLayout.astro";
+---
+
+<DocLayout
+  title="Vue, Svelte & vanilla (the framework-agnostic engine)"
+  description="bhasha-js ships a React-free engine, BhashaStore, that drives any UI — vanilla JS, Vue, Svelte, Solid, Angular, React Native. Import it from bhasha-js/vanilla."
+>
+  <h1>Beyond React — the BhashaStore engine</h1>
+  <p>
+    The React components are one binding over a small, framework-agnostic engine called
+    <code>BhashaStore</code>. It holds the active language + register, exposes <code>t()</code> and the
+    formatters, and lets you <code>subscribe()</code> to changes. Import it from
+    <code>bhasha-js/vanilla</code> — no React in the dependency graph.
+  </p>
+
+  <pre><code><span class="tok-kw">import</span> &#123; <span class="tok-key">createBhashaStore</span> &#125; <span class="tok-kw">from</span> <span class="tok-str">"bhasha-js/vanilla"</span>;
+
+<span class="tok-kw">const</span> store = <span class="tok-kw">await</span> <span class="tok-fn">createBhashaStore</span>(&#123;
+  projectKey: <span class="tok-str">"bjs_..."</span>,        <span class="tok-cmt">// or preloadedTranslations: &#123; ... &#125;</span>
+  defaultLang: <span class="tok-str">"en"</span>,
+&#125;);
+
+store.<span class="tok-fn">subscribe</span>(() =&gt; render());
+store.<span class="tok-fn">t</span>(<span class="tok-str">"hero.title"</span>);                 <span class="tok-cmt">// translated string</span>
+store.<span class="tok-fn">formatCurrency</span>(<span class="tok-str">1234567</span>);          <span class="tok-cmt">// "₹12,34,567.00"</span>
+<span class="tok-kw">await</span> store.<span class="tok-fn">setLang</span>(<span class="tok-str">"hi"</span>);              <span class="tok-cmt">// switches + notifies subscribers</span></code></pre>
+
+  <h2>Vanilla JS</h2>
+  <pre><code><span class="tok-kw">const</span> store = <span class="tok-kw">await</span> <span class="tok-fn">createBhashaStore</span>(&#123; projectKey: <span class="tok-str">"bjs_..."</span> &#125;);
+
+<span class="tok-kw">function</span> <span class="tok-fn">render</span>() &#123;
+  document.<span class="tok-fn">querySelector</span>(<span class="tok-str">"h1"</span>).textContent = store.<span class="tok-fn">t</span>(<span class="tok-str">"hero.title"</span>);
+&#125;
+store.<span class="tok-fn">subscribe</span>(render);
+render();
+
+document.<span class="tok-fn">querySelector</span>(<span class="tok-str">"#hindi"</span>).<span class="tok-fn">addEventListener</span>(<span class="tok-str">"click"</span>, () =&gt; store.<span class="tok-fn">setLang</span>(<span class="tok-str">"hi"</span>));</code></pre>
+
+  <h2>Vue 3</h2>
+  <p>Wrap the store in a composable so templates re-render on change:</p>
+  <pre><code><span class="tok-cmt">// useBhasha.ts</span>
+<span class="tok-kw">import</span> &#123; ref, onUnmounted &#125; <span class="tok-kw">from</span> <span class="tok-str">"vue"</span>;
+<span class="tok-kw">import</span> &#123; <span class="tok-key">BhashaStore</span> &#125; <span class="tok-kw">from</span> <span class="tok-str">"bhasha-js/vanilla"</span>;
+
+<span class="tok-kw">const</span> store = <span class="tok-kw">new</span> <span class="tok-fn">BhashaStore</span>(&#123; projectKey: <span class="tok-str">"bjs_..."</span> &#125;);
+store.<span class="tok-fn">init</span>();
+
+<span class="tok-kw">export function</span> <span class="tok-fn">useBhasha</span>() &#123;
+  <span class="tok-kw">const</span> state = <span class="tok-fn">ref</span>(store.<span class="tok-fn">getState</span>());
+  <span class="tok-kw">const</span> off = store.<span class="tok-fn">subscribe</span>((s) =&gt; (state.value = &#123; ...s &#125;));
+  <span class="tok-fn">onUnmounted</span>(off);
+  <span class="tok-kw">return</span> &#123; state, t: store.t.<span class="tok-fn">bind</span>(store), setLang: store.setLang.<span class="tok-fn">bind</span>(store) &#125;;
+&#125;</code></pre>
+
+  <h2>Svelte</h2>
+  <p>The store's <code>subscribe</code> shape is one adapter away from a Svelte store:</p>
+  <pre><code><span class="tok-cmt">// bhasha.ts</span>
+<span class="tok-kw">import</span> &#123; <span class="tok-key">BhashaStore</span> &#125; <span class="tok-kw">from</span> <span class="tok-str">"bhasha-js/vanilla"</span>;
+
+<span class="tok-kw">const</span> store = <span class="tok-kw">new</span> <span class="tok-fn">BhashaStore</span>(&#123; projectKey: <span class="tok-str">"bjs_..."</span> &#125;);
+store.<span class="tok-fn">init</span>();
+
+<span class="tok-cmt">// a Svelte-compatible readable: subscribe(fn) → unsubscribe</span>
+<span class="tok-kw">export const</span> bhasha = &#123;
+  subscribe(fn) &#123; fn(store.<span class="tok-fn">getState</span>()); <span class="tok-kw">return</span> store.<span class="tok-fn">subscribe</span>(fn); &#125;,
+&#125;;
+<span class="tok-kw">export</span> &#123; store &#125;;
+<span class="tok-cmt">// in a component:  &#36;bhasha.lang  ·  store.t("hero.title")  ·  store.setLang("hi")</span></code></pre>
+
+  <h2>React</h2>
+  <p>
+    In React, just use the built-in <a href="/docs/quickstart/"><code>&lt;I18nProvider&gt;</code> + <code>useTranslation()</code></a> —
+    they're a thin binding over this same engine.
+  </p>
+
+  <h2>What you get everywhere</h2>
+  <p>
+    Every binding inherits the full South-Asian feature set — lakh/crore numbers, native digits,
+    CLDR plurals, RTL, script-aware fonts, register variants, and culturally-aware fallback chains —
+    because they all live in the engine, not the React layer.
+  </p>
+</DocLayout>

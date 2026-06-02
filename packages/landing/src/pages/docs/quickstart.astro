@@ -42,6 +42,13 @@ import DocLayout from "../../components/DocLayout.astro";
   <span class="tok-key">"items_other"</span>: <span class="tok-str">"&#123;count&#125; आइटम"</span>
 &#125;</code></pre>
 
+  <pre><code><span class="tok-cmt">// src/locales/ur.json — Urdu is RTL; the SDK flips the layout for you</span>
+&#123;
+  <span class="tok-key">"hero.title"</span>: <span class="tok-str">"ہمارے اسٹور میں خوش آمدید"</span>,
+  <span class="tok-key">"items_one"</span>: <span class="tok-str">"&#123;count&#125; آئٹم"</span>,
+  <span class="tok-key">"items_other"</span>: <span class="tok-str">"&#123;count&#125; آئٹمز"</span>
+&#125;</code></pre>
+
   <p>Wrap your app:</p>
   <pre><code><span class="tok-kw">import</span> &#123; <span class="tok-key">I18nProvider</span>, <span class="tok-key">useTranslation</span>, <span class="tok-key">LanguageSwitcher</span> &#125; <span class="tok-kw">from</span> <span class="tok-str">"bhasha-js"</span>;
 <span class="tok-kw">import</span> en <span class="tok-kw">from</span> <span class="tok-str">"./locales/en.json"</span>;
@@ -70,7 +77,16 @@ import DocLayout from "../../components/DocLayout.astro";
   );
 &#125;</code></pre>
 
-  <p>Done. Run your app, click the language switcher, watch Hindi work end-to-end.</p>
+  <p>Done. Run your app, click the language switcher, watch it work end-to-end.</p>
+
+  <p><strong>What you just got — with zero backend and no API key:</strong></p>
+  <ul>
+    <li><strong>₹12,34,567.00</strong> lakh/crore grouping (not <code>1,234,567</code>) — for every South Asian currency, including PKR (<code>Rs 12,34,567.00</code>) and LKR.</li>
+    <li>Native digits on demand — <code>१२,३४,५६७</code> (Devanagari), <code>১২,৩৪,৫৬৭</code> (Bengali).</li>
+    <li>Correct CLDR plurals — Hindi treats <code>0</code> as singular, English treats it as plural. Most tools get this wrong.</li>
+    <li>Switch to Urdu and the whole layout flips <strong>right-to-left</strong> automatically, in the Nastaliq font.</li>
+    <li>The right Google Font for each script, auto-loaded only when needed.</li>
+  </ul>
 
   <h3>Mode 2 · Hosted dashboard</h3>
   <p>Best for production apps with translators on your team.</p>
@@ -91,7 +107,7 @@ import DocLayout from "../../components/DocLayout.astro";
   &lt;<span class="tok-key">YourApp</span> /&gt;
 &lt;/<span class="tok-key">I18nProvider</span>&gt;</code></pre>
 
-  <p>The SDK fetches translations from <code>https://api.bhashajs.com</code> using the <code>x-api-key</code> header. Cached in memory after first load — language switching is instant.</p>
+  <p>The SDK fetches translations from <code>https://api.bhashajs.com/api</code> using the <code>x-api-key</code> header. Cached in memory after first load — language switching is instant.</p>
 
   <h3>Mode 3 · Self-hosted</h3>
   <p>See <a href="/docs/self-hosting/">Self-hosting guide</a>.</p>

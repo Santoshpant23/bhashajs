@@ -1,0 +1,78 @@
+---
+import DocLayout from "../../components/DocLayout.astro";
+---
+
+<DocLayout
+  title="Why bhasha-js (vs i18next / react-intl)"
+  description="Generic i18n libraries work for South Asian languages — but they make you fix Indic plurals, lakh/crore numbers, RTL, fonts, and Romanized locales yourself. Here is exactly what bhasha-js gets right out of the box."
+>
+  <h1>Why bhasha-js?</h1>
+  <p>
+    <code>i18next</code> and <code>react-intl</code> are excellent, mature, framework-spanning
+    libraries. If you only swap strings, use them. But the moment your audience is Hindi, Bengali,
+    Urdu, Tamil, Nepali or any other South Asian language, the defaults are wrong in ways that are
+    easy to miss and embarrassing to ship. bhasha-js fixes each one by default.
+  </p>
+
+  <h2>1. Hindi treats 0 as singular. Most tools don't.</h2>
+  <p>CLDR says Hindi, Bengali, Gujarati, Kannada, Marathi, Punjabi and Sinhala treat <strong>both 0 and 1</strong> as the singular ("one") category. English treats 0 as plural. A generic setup applies English rules globally:</p>
+  <pre><code><span class="tok-cmt">// generic i18n, default config</span>
+<span class="tok-fn">t</span>(<span class="tok-str">"items"</span>, &#123; count: <span class="tok-str">0</span> &#125;)   <span class="tok-cmt">// Hindi → "0 आइटमें"  ✗ wrong (plural)</span>
+
+<span class="tok-cmt">// bhasha-js</span>
+<span class="tok-fn">t</span>(<span class="tok-str">"items"</span>, &#123; count: <span class="tok-str">0</span> &#125;)   <span class="tok-cmt">// Hindi → "0 आइटम"   ✓ correct (singular)</span></code></pre>
+
+  <h2>2. South Asia groups numbers differently.</h2>
+  <p>The lakh/crore system groups the first three digits, then twos — not threes. bhasha-js does this for every supported currency, including the ones <code>Intl</code> gets wrong (PKR, LKR):</p>
+  <pre><code><span class="tok-cmt">// generic                       // bhasha-js</span>
+1,234,567                       <span class="tok-fn">formatNumber</span>(<span class="tok-str">1234567</span>)   <span class="tok-cmt">// → 12,34,567</span>
+$1,234,567.00                   <span class="tok-fn">formatCurrency</span>(<span class="tok-str">1234567</span>) <span class="tok-cmt">// → ₹12,34,567.00</span>
+                                <span class="tok-cmt">// Urdu/PKR → Rs 12,34,567.00 (lakh-grouped)</span></code></pre>
+
+  <h2>3. Code-mixed locales are first-class, not "broken" Hindi.</h2>
+  <p>
+    Over half of young South Asians type in the Latin script — Hinglish, Banglish, Roman Urdu, Roman
+    Nepali. Generic tools have no concept of these as locales; you'd have to fake them. bhasha-js
+    ships <code>hi-Latn</code>, <code>bn-Latn</code>, <code>ur-Latn</code>, <code>ne-Latn</code>,
+    <code>pa-Latn</code> as real locales — with their own translation memory, plural rules, fonts,
+    and fallback chains. A Roman-Nepali reader falls back to Hinglish before English, because the
+    <em>script</em> bridges harder than the language family does.
+  </p>
+
+  <h2>4. One key, multiple registers — chosen at render time.</h2>
+  <p>
+    South Asian languages encode formality grammatically (आप / तुम / तू). The same key can serve a
+    formal banking tone or a Gen-Z casual tone, switched with a prop — no ICU gymnastics, no
+    duplicate key trees:
+  </p>
+  <pre><code>&lt;<span class="tok-key">I18nProvider</span> register=<span class="tok-str">"formal"</span>&gt;   <span class="tok-cmt">// honorific, native-vocabulary</span>
+&lt;<span class="tok-key">I18nProvider</span> register=<span class="tok-str">"casual"</span>&gt;   <span class="tok-cmt">// "Order करें", "Cart में add करो"</span></code></pre>
+
+  <h2>5. RTL, fonts, and fallbacks — handled.</h2>
+  <ul>
+    <li><strong>RTL:</strong> switch to Urdu and the layout flips automatically (<code>dir="rtl"</code>), in the Nastaliq font.</li>
+    <li><strong>Fonts:</strong> the correct Google Font for each script is loaded only when needed — no broken conjuncts.</li>
+    <li><strong>Fallbacks:</strong> Bengali falls back to Hindi before English; Tamil and the other Dravidian languages skip Hindi entirely (a Tamil speaker isn't more likely to read Hindi than English).</li>
+  </ul>
+
+  <h2>Familiar surface, type-safe keys</h2>
+  <p>
+    The API mirrors react-i18next on purpose — <code>useTranslation()</code>, <code>t()</code>,
+    <code>&lt;Trans /&gt;</code>, <code>&lt;LanguageSwitcher /&gt;</code> — so migration is muscle
+    memory. Run <code>npx bhasha pull</code> and <code>t()</code> becomes type-safe: autocomplete on
+    your keys and a compile error on a typo.
+  </p>
+
+  <h2>When to use something else</h2>
+  <p>
+    bhasha-js is React-first and South-Asia-first. If you need Vue/Svelte/Angular today, a 600-integration
+    translation-management platform, or languages outside South Asia as your primary market, a generic
+    tool may fit better. We'd rather tell you that than oversell.
+  </p>
+
+  <h2>Next</h2>
+  <ul>
+    <li><a href="/docs/quickstart/">Quickstart — a translated page in 5 minutes</a></li>
+    <li><a href="/docs/languages/">The 14 languages, fonts, fallbacks, and plural rules</a></li>
+  </ul>
+</DocLayout>

@@ -18,7 +18,7 @@ import DocLayout from "../../components/DocLayout.astro";
       <tr><td><code>apiToken</code></td><td><code>string</code></td><td>—</td><td>JWT for advanced auth.</td></tr>
       <tr><td><code>preloadedTranslations</code></td><td><code>Record&lt;string, Record&lt;string, string&gt;&gt;</code></td><td>—</td><td>Bundle translations into your app (Mode 1).</td></tr>
       <tr><td><code>defaultLang</code></td><td><code>string</code></td><td><code>"en"</code></td><td>Initial language code.</td></tr>
-      <tr><td><code>apiUrl</code></td><td><code>string</code></td><td><code>"https://api.bhashajs.com"</code></td><td>API base URL (override for self-hosting).</td></tr>
+      <tr><td><code>apiUrl</code></td><td><code>string</code></td><td><code>"https://api.bhashajs.com/api"</code></td><td>API base URL (override for self-hosting, e.g. <code>"https://my.host/api"</code>).</td></tr>
       <tr><td><code>region</code></td><td><code>string</code></td><td>—</td><td>Region override: <code>"IN"</code>, <code>"BD"</code>, <code>"PK"</code>, <code>"LK"</code>, <code>"NP"</code>. Affects currency + Intl locale.</td></tr>
       <tr><td><code>onLanguageChange</code></td><td><code>(lang: string) =&gt; void</code></td><td>—</td><td>Callback whenever language changes.</td></tr>
     </tbody>
