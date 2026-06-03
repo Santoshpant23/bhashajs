@@ -11,6 +11,13 @@ build/
 .env.*.local
 packages/**/.env
 
+# Service-account keys / credentials — NEVER commit
+credentials/
+**/credentials/
+*sa.json
+*service-account*.json
+gcp*.json
+
 # IDE
 .vscode/
 .idea/

@@ -11,7 +11,7 @@
  * and returns translations in the target language at the requested register.
  */
 
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI } from "@google/genai";
 import type { Register } from "../models/Translation";
 
 // ─── Interface ──────────────────────────────────────────────────
@@ -195,11 +195,42 @@ export function isNonLatinScript(s: string): boolean {
 // ─── Gemini Provider ────────────────────────────────────────────
 
 class GeminiProvider implements AITranslationProvider {
-  private model;
+  private ai: GoogleGenAI;
+  private model: string;
 
-  constructor(apiKey: string) {
-    const genAI = new GoogleGenerativeAI(apiKey);
-    this.model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+  constructor() {
+    this.model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+    const useVertex = String(process.env.GEMINI_USE_VERTEX || "").toLowerCase() === "true";
+
+    if (useVertex) {
+      // Vertex AI path — billed to the GCP project (uses the $300 credit),
+      // authenticated via Application Default Credentials. Set
+      // GOOGLE_APPLICATION_CREDENTIALS to the service-account JSON path.
+      const project = process.env.GOOGLE_CLOUD_PROJECT;
+      if (!project) {
+        throw new Error("GEMINI_USE_VERTEX=true but GOOGLE_CLOUD_PROJECT is not set");
+      }
+      const location = process.env.GOOGLE_CLOUD_LOCATION || "us-central1";
+      this.ai = new GoogleGenAI({ vertexai: true, project, location });
+    } else {
+      // AI Studio path — a plain API key (does NOT use the GCP credit).
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        throw new Error("GEMINI_API_KEY is not set (and GEMINI_USE_VERTEX is not 'true')");
+      }
+      this.ai = new GoogleGenAI({ apiKey });
+    }
+  }
+
+  /** One generate call. The translate/voice prompts all expect a JSON object,
+   *  so we ask the model for JSON and hand the raw text to extractJsonObject. */
+  private async generate(prompt: string): Promise<string> {
+    const resp = await this.ai.models.generateContent({
+      model: this.model,
+      contents: prompt,
+      config: { responseMimeType: "application/json" },
+    });
+    return resp.text || "";
   }
 
   async translate(
@@ -228,12 +259,12 @@ class GeminiProvider implements AITranslationProvider {
       // One attempt + one retry (covers transient timeouts / malformed JSON).
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          const result = await withTimeout(
-            this.model.generateContent(prompt),
+          const text = await withTimeout(
+            this.generate(prompt),
             AI_CALL_TIMEOUT_MS,
             "Gemini translate"
           );
-          parsed = extractJsonObject(result.response.text());
+          parsed = extractJsonObject(text);
           if (Object.keys(parsed).length > 0) break;
         } catch (error: any) {
           console.error(
@@ -388,12 +419,12 @@ ${items}`;
     // bad response — return whatever cells parsed cleanly.
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const result = await withTimeout(
-          this.model.generateContent(prompt),
+        const text = await withTimeout(
+          this.generate(prompt),
           AI_CALL_TIMEOUT_MS,
           "Gemini voice"
         );
-        parsed = extractJsonObject(result.response.text());
+        parsed = extractJsonObject(text);
         if (Object.keys(parsed).length > 0) break;
       } catch (error: any) {
         console.error(
@@ -439,11 +470,8 @@ export function getAIProvider(): AITranslationProvider {
 
   switch (provider) {
     case "gemini": {
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) {
-        throw new Error("GEMINI_API_KEY is not set in .env");
-      }
-      return new GeminiProvider(apiKey);
+      // GeminiProvider reads its own config from env (Vertex vs AI Studio).
+      return new GeminiProvider();
     }
 
     // Future providers:
