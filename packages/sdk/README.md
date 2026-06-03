@@ -119,6 +119,13 @@ See the [main repo](https://github.com/santoshpant23/bhashajs) for self-hosting 
 
 ---
 
+## What's new in 0.3
+
+- **Type-safe keys + `bhasha` CLI** — `npx bhasha pull` generates a declaration that makes `t()` / `<Trans>` autocomplete your keys and turns a typo into a compile error. Zero config; falls back to `string` when not generated.
+- **Next.js App Router** — the main entry is marked `"use client"`, and pure formatters are importable from `bhasha-js/server` inside Server Components.
+- **Framework-agnostic engine** — `bhasha-js/vanilla` exposes `BhashaStore` (subscribe/emit) for Vue, Svelte, vanilla JS, and React Native. See the [frameworks guide](https://bhashajs.com/docs/frameworks/).
+- **Correctness fixes** — interpolation no longer crashes/corrupts on regex-special keys or `$`-values; lakh/crore now correct for PKR & LKR; `formatDate` returns `""` (not "Invalid Date") on bad input; SSR-safe; race-guarded language/register switches.
+
 ## What's new in 0.2
 
 - **Register-aware translations** — same key, three formality variants (`default` / `formal` / `casual`). Casual leans into code-mixing; formal sticks to native vocabulary.

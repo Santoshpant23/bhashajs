@@ -8,6 +8,13 @@ import DocLayout from "../../components/DocLayout.astro";
 >
   <h1>API reference</h1>
 
+  <p>
+    New in 0.3: a framework-agnostic engine (<a href="/docs/frameworks/"><code>bhasha-js/vanilla</code></a>),
+    a server-safe entry (<code>bhasha-js/server</code>) for React Server Components / Next.js App Router,
+    and a <code>npx bhasha pull</code> CLI that makes <code>t()</code> type-safe (autocomplete + a compile
+    error on a typo'd key).
+  </p>
+
   <h2><code>&lt;I18nProvider&gt;</code></h2>
   <p>Top-level provider. Wrap your app once.</p>
   <table>
@@ -21,6 +28,9 @@ import DocLayout from "../../components/DocLayout.astro";
       <tr><td><code>apiUrl</code></td><td><code>string</code></td><td><code>"https://api.bhashajs.com/api"</code></td><td>API base URL (override for self-hosting, e.g. <code>"https://my.host/api"</code>).</td></tr>
       <tr><td><code>region</code></td><td><code>string</code></td><td>—</td><td>Region override: <code>"IN"</code>, <code>"BD"</code>, <code>"PK"</code>, <code>"LK"</code>, <code>"NP"</code>. Affects currency + Intl locale.</td></tr>
       <tr><td><code>onLanguageChange</code></td><td><code>(lang: string) =&gt; void</code></td><td>—</td><td>Callback whenever language changes.</td></tr>
+      <tr><td><code>register</code></td><td><code>"default" | "formal" | "casual"</code></td><td><code>"default"</code></td><td>Formality/style of translations. Switch at runtime via <code>setRegister()</code>.</td></tr>
+      <tr><td><code>userSegment</code> / <code>segmentRules</code></td><td><code>string</code> / <code>Record&lt;string, Register&gt;</code></td><td>—</td><td>Maps a user segment (e.g. <code>"genz"</code>) to a register automatically.</td></tr>
+      <tr><td><code>voice</code></td><td><code>boolean</code></td><td><code>false</code></td><td>Pre-fetch IPA/SSML so <code>formatPhonetic()</code> / <code>formatSSML()</code> return data.</td></tr>
     </tbody>
   </table>
 
@@ -32,9 +42,14 @@ import DocLayout from "../../components/DocLayout.astro";
   supportedLangs,     <span class="tok-cmt">// string[]</span>
   isLoading,          <span class="tok-cmt">// boolean</span>
   error,              <span class="tok-cmt">// string | null — surfaces auth/network errors</span>
+  register,           <span class="tok-cmt">// "default" | "formal" | "casual"</span>
+  setRegister,        <span class="tok-cmt">// (register) =&gt; void</span>
+  setSegment,         <span class="tok-cmt">// (segment: string) =&gt; void</span>
   formatNumber,       <span class="tok-cmt">// (value, options?) =&gt; string</span>
   formatCurrency,     <span class="tok-cmt">// (value, options?) =&gt; string</span>
   formatDate,         <span class="tok-cmt">// (date, options?) =&gt; string</span>
+  formatPhonetic,     <span class="tok-cmt">// (key) =&gt; string  — IPA (needs voice:true)</span>
+  formatSSML,         <span class="tok-cmt">// (key) =&gt; string  — SSML (needs voice:true)</span>
 &#125; = <span class="tok-fn">useTranslation</span>();</code></pre>
 
   <h3><code>t(key, params?)</code></h3>

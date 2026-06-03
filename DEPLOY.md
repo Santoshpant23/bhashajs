@@ -4,13 +4,13 @@ Step-by-step for going live tonight. Three things deploy independently:
 
 1. **Marketing site** → `bhashajs.com` (Vercel)
 2. **Dashboard** → `app.bhashajs.com` (Vercel)
-3. **Backend API** → `api.bhashajs.com` (Railway)
+3. **Backend API** → `api.bhashajs.com` (GCP VM + Caddy + Vertex AI)
 
 Plus your existing **MongoDB Atlas** stays where it is.
 
 ---
 
-## 0. Before anything: publish `bhasha-js@0.2.1` to npm
+## 0. Before anything: publish `bhasha-js@0.3.0` to npm
 
 ```bash
 cd packages/sdk
@@ -18,14 +18,14 @@ cd packages/sdk
 # Log in if you aren't already
 npm login
 
-# Publish — the version, build, and tarball are all ready
+# Publish — prepublishOnly runs the build automatically
 npm publish
 ```
 
 Verify:
 ```bash
 npm view bhasha-js version
-# Should show 0.2.1
+# Should show 0.3.0
 ```
 
 ---
@@ -49,41 +49,87 @@ DNS takes 5–60 minutes to propagate. While that happens, do the deploys below.
 
 ---
 
-## 2. Backend on Railway (`api.bhashajs.com`) — 15 min
+## 2. Backend on a GCP VM (`api.bhashajs.com`) behind Caddy — Vertex AI
 
-### Why Railway?
-- Deploys directly from your existing `Dockerfile` in `packages/server`.
-- $5/mo on the Hobby plan, includes $5 of usage credit. Likely free for your beta traffic.
-- Custom domain + auto-SSL with one click.
+The backend runs as a Docker container on a GCP VM, reverse-proxied by **Caddy**
+(automatic HTTPS). AI translation uses **Vertex AI** (service-account auth,
+billed to the GCP project's credit) instead of a free-tier API key. One VM can
+host several apps — Caddy virtual-hosts them by domain — and MongoDB stays on
+Atlas, so moving hosts needs no data migration.
 
-### Steps
+### DNS
+Point an `A` record for `api.bhashajs.com` at the VM's public IP.
 
-1. Go to **[railway.com](https://railway.com)** → sign up with GitHub.
-2. **New Project → Deploy from GitHub Repo**, select your `bhashajs` repo.
-3. After it imports, go to the service settings:
-   - **Root Directory**: `packages/server`
-   - **Build Command**: leave default (Railway detects the Dockerfile)
-   - **Start Command**: leave default
-4. **Variables** tab — add these (paste your real values from `packages/server/.env` locally — never commit them):
-   ```
-   MONGO_CONNECTION_URL=<your-atlas-connection-string>
-   JWT_SECRET=<generate-with-openssl-rand-hex-32>
-   GEMINI_API_KEY=<your-gemini-api-key>
-   PORT=5000
-   JWT_EXPIRY=7d
-   AI_PROVIDER=gemini
-   CORS_ORIGIN=https://bhashajs.com,https://app.bhashajs.com
-   ```
-   > **Generate a fresh JWT secret for production**: `openssl rand -hex 32`. Don't reuse the dev one.
-   > **Don't reuse your dev Mongo password** if it was ever committed anywhere — rotate it in Atlas first.
-5. **Settings → Networking → Generate Domain** → Railway gives you something like `bhashajs-server-production.up.railway.app`. Test it: `https://that-url/api/health` should return `{"success":true}`.
-6. **Settings → Networking → Custom Domain** → enter `api.bhashajs.com`. Railway shows a CNAME target — copy it back into Namecheap as the `api` CNAME value (replacing the placeholder you put in step 1).
-7. Wait for SSL to provision (~2 min). Then `https://api.bhashajs.com/api/health` should respond.
+### Layout on the VM (`~/bhashajs/`)
+The Docker build context is `packages/server` (self-contained). Copy it up
+(minus `node_modules`/`dist`) and add the secrets:
+```
+~/bhashajs/
+  server/                 # contents of packages/server
+  credentials/sa.json     # Vertex service-account key (chmod 600)
+  .env                    # chmod 600
+  docker-compose.yml
+```
+
+`.env` — reuse your Atlas URL, generate a fresh strong JWT, enable Vertex:
+```
+NODE_ENV=production
+PORT=5000
+JWT_SECRET=<openssl rand -hex 32>          # must be >=32 chars or the server won't boot
+MONGO_CONNECTION_URL=<your Atlas mongodb+srv URL>
+AI_PROVIDER=gemini
+GEMINI_USE_VERTEX=true
+GOOGLE_CLOUD_PROJECT=<your-gcp-project-id>
+GOOGLE_CLOUD_LOCATION=us-central1
+GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/sa.json
+GEMINI_MODEL=gemini-2.5-flash
+CORS_ORIGIN=*
+```
+
+`docker-compose.yml` — server only, bound to localhost, SA key mounted read-only:
+```yaml
+services:
+  server:
+    build: ./server
+    restart: unless-stopped
+    env_file: ./.env
+    ports:
+      - "127.0.0.1:5000:5000"
+    volumes:
+      - ./credentials/sa.json:/app/credentials/sa.json:ro
+```
+
+### Build, run, and proxy
+```bash
+cd ~/bhashajs
+docker builder prune -af          # if disk is tight
+docker compose up -d --build
+curl localhost:5000/api/health    # -> {"success":true,"data":{"status":"ok"}}
+```
+Add a Caddy block to `/etc/caddy/Caddyfile` and reload (graceful — other sites unaffected):
+```
+api.bhashajs.com {
+    encode gzip
+    reverse_proxy localhost:5000 {
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Real-IP {remote_host}
+    }
+}
+```
+```bash
+sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+sudo systemctl reload caddy
+```
+DNS already points at the VM, so Caddy issues the TLS cert automatically.
+`https://api.bhashajs.com/api/health` should respond.
+
+> **Vertex AI:** enable the Vertex AI API in the GCP project and grant the
+> service account the **Vertex AI User** role. The `sa.json` is mounted read-only
+> and `GOOGLE_APPLICATION_CREDENTIALS` points Application Default Credentials at it.
 
 ### Atlas access
-Your Atlas cluster needs to allow Railway's IPs. The lazy-but-fine option:
-- Atlas → Network Access → Add IP Address → **Allow access from anywhere** (`0.0.0.0/0`).
-- This is acceptable for a dev/beta cluster. Lock it down later by whitelisting Railway's egress IP range.
+Allow the VM's public IP in Atlas → Network Access (or `0.0.0.0/0` for a
+dev/beta cluster; lock it down to the VM's IP later).
 
 ---
 
@@ -140,7 +186,7 @@ Then end-to-end:
    ```bash
    mkdir test-bhasha && cd test-bhasha
    npm init -y
-   npm install bhasha-js@beta react react-dom
+   npm install bhasha-js react react-dom
    ```
 5. Write a tiny test app using your real `projectKey`. Visit it. Should fetch translations from your live API.
 
@@ -152,13 +198,13 @@ Both Vercel projects auto-deploy on push to `master` by default. Confirm:
 - Marketing project → Settings → Git → Production Branch should be `master`.
 - Dashboard project → same.
 
-For Railway: Settings → Service → Source → "Auto Deploy on Push" toggle should be on.
+For the GCP backend: redeploy is manual — copy the updated `packages/server` to `~/bhashajs/server` and run `docker compose up -d --build` (consider a small deploy script or a GitHub Actions SSH workflow to automate it).
 
 ---
 
 ## 7. Recommended next-day items (post-launch)
 
-- **Atlas IP whitelist**: lock down `0.0.0.0/0` to Railway's egress range. (Look up "Railway egress IP" in their docs.)
+- **Atlas IP whitelist**: lock down `0.0.0.0/0` to the GCP VM's public IP (reserve a static external IP for the VM so it doesn't change).
 - **MongoDB backups**: enable Atlas continuous backup on the free tier or schedule a daily `mongodump`.
 - **Vercel analytics**: free tier gives basic traffic data — turn it on for both Vercel projects.
 - **Plausible / Fathom on the marketing site**: privacy-friendly analytics, ~$9/mo.
@@ -173,9 +219,10 @@ For Railway: Settings → Service → Source → "Auto Deploy on Push" toggle sh
 |-----------|----------|------|---------|
 | Marketing site | Vercel | Hobby | $0 |
 | Dashboard | Vercel | Hobby | $0 |
-| Backend API | Railway | Hobby | $5 (incl. $5 credit) |
+| Backend API | GCP | e2-small VM | ~$13/mo (covered by the $300 credit for ~2 yrs) |
+| AI translation | Vertex AI | gemini-2.5-flash | usage-based, billed to the GCP credit |
 | MongoDB | Atlas | M0 Free | $0 |
 | Domain | Namecheap | bhashajs.com | ~$15/year |
-| **Total** | | | **~$5/mo** |
+| **Total** | | | **~$0/mo while the GCP credit lasts** |
 
-Sustainable for years on this stack.
+The GCP $300 free credit covers the VM + Vertex AI usage for a long runway.

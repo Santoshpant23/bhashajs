@@ -19,7 +19,7 @@ BhashaJS is an open-source internationalization platform that provides AI-powere
 - **Fallback chains** — Bengali falls back to Hindi before English; Dravidian languages skip Hindi
 - **CLDR pluralization** — correct plural rules for every supported language
 - **AI translations** — Google Gemini-powered with translation memory and glossary enforcement, register + vertical aware
-- **Vertical packs** — pre-loaded translation packs for regulated verticals (fintech KYC starter ships in v0.2)
+- **Vertical packs** — pre-loaded translation packs for regulated verticals (fintech KYC starter included)
 - **Dashboard** — manage keys, invite translators, review AI translations, export to CSV/Android XML/iOS .strings
 - **Team collaboration** — owner/translator/viewer roles with per-language assignments
 - **Version history** — full audit trail of every translation change
@@ -153,9 +153,14 @@ chmod +x deploy.sh
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `JWT_SECRET` | Yes | — | Secret for signing JWT tokens. Generate with `openssl rand -hex 32` |
+| `JWT_SECRET` | Yes | — | Secret for signing JWT tokens. **Must be ≥ 32 chars** — the server refuses to boot on a short/weak value. Generate with `openssl rand -hex 32` |
 | `MONGO_CONNECTION_URL` | Yes | — | MongoDB connection string (set automatically in Docker) |
-| `GEMINI_API_KEY` | Yes | — | Google Gemini API key for AI translations |
+| `GEMINI_API_KEY` | No\* | — | Google Gemini (AI Studio) API key. \*Required **unless** using Vertex AI (`GEMINI_USE_VERTEX=true`) |
+| `GEMINI_USE_VERTEX` | No | `false` | Use Vertex AI instead of the AI Studio key (bills to your GCP project/credit, service-account auth). When `true`, `GEMINI_API_KEY` is ignored |
+| `GOOGLE_CLOUD_PROJECT` | No | — | GCP project ID. Required when `GEMINI_USE_VERTEX=true` |
+| `GOOGLE_CLOUD_LOCATION` | No | `us-central1` | Vertex AI region |
+| `GOOGLE_APPLICATION_CREDENTIALS` | No | — | Path to the service-account JSON (ADC) for Vertex AI |
+| `GEMINI_MODEL` | No | `gemini-2.5-flash` | Model id used for AI translations / voice |
 | `JWT_EXPIRY` | No | `7d` | JWT token expiry duration |
 | `CORS_ORIGIN` | No | `*` | Allowed CORS origins |
 | `MONGO_ROOT_PASSWORD` | No | `changeme` | MongoDB root password (Docker only) |
