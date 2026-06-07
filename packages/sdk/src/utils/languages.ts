@@ -334,13 +334,24 @@ export const REGION_OVERRIDES: Record<string, { currency: string; intlLocale: st
  * so the SDK never crashes on an unrecognized code.
  */
 export function getLangInfo(code: string): LangInfo {
-  return LANGUAGES[code] || {
+  if (LANGUAGES[code]) return LANGUAGES[code];
+
+  // Unknown code — infer direction so we never render an RTL language
+  // left-to-right (the exact South-Asian RTL audience we target). RTL if the
+  // base is a known RTL language or the code carries an Arabic-script subtag
+  // (e.g. "ur-IN", "pa-Arab"); a "-Latn" romanized variant is always LTR.
+  const lower = code.toLowerCase();
+  const isLatn = /-latn(-|$)/.test(lower);
+  const rtl =
+    !isLatn &&
+    (/^(ur|ar|fa|ps|sd|ks)(-|$)/.test(lower) || /-arab(-|$)/.test(lower));
+  return {
     code,
     name: code,
     englishName: code,
-    dir: "ltr" as const,
+    dir: rtl ? ("rtl" as const) : ("ltr" as const),
     font: "sans-serif",
-    script: "Unknown",
+    script: rtl ? "Arabic" : isLatn ? "Latin" : "Unknown",
     defaultRegion: "IN",
     intlLocale: code,
     numberingSystem: "latn",

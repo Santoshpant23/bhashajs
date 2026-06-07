@@ -126,10 +126,11 @@ export class BhashaStore {
     }
   }
 
-  /** Current state snapshot. Treat as read-only — `emit` replaces it
-   *  copy-on-write, so a captured reference stays stable; do not mutate it. */
+  /** Current state snapshot. Returns a shallow copy so a consumer (or a
+   *  framework adapter) mutating it can't poison canonical state — all real
+   *  changes must go through `emit`. */
   getState(): BhashaState {
-    return this.state;
+    return { ...this.state };
   }
 
   /** Escape hatch to the underlying client (cache, voice, preload). */
@@ -147,7 +148,15 @@ export class BhashaStore {
 
   private emit(patch: Partial<BhashaState>): void {
     this.state = { ...this.state, ...patch };
-    for (const fn of this.listeners) fn(this.state);
+    for (const fn of this.listeners) {
+      // Isolate subscribers: one throwing listener must not starve the rest or
+      // abort the emit (which would desync a multi-framework UI).
+      try {
+        fn(this.state);
+      } catch (e) {
+        console.error("[BhashaJS] a subscriber threw during emit:", e);
+      }
+    }
   }
 
   /**
@@ -192,17 +201,27 @@ export class BhashaStore {
   async setLang(newLang: string): Promise<void> {
     if (newLang === this.state.lang) return;
     const reqId = ++this.langReq;
-    this.emit({ isLoading: true });
+    this.emit({ isLoading: true, error: null });
 
-    await this.client.fetchTranslations(newLang, this.state.register);
-    if (this.state.register !== DEFAULT_REGISTER) {
-      await this.client.fetchTranslations(newLang, DEFAULT_REGISTER);
-    }
-    if (this.voiceEnabled) {
-      await this.client.fetchVoice(newLang, this.state.register);
+    try {
+      await this.client.fetchTranslations(newLang, this.state.register);
       if (this.state.register !== DEFAULT_REGISTER) {
-        await this.client.fetchVoice(newLang, DEFAULT_REGISTER);
+        await this.client.fetchTranslations(newLang, DEFAULT_REGISTER);
       }
+      if (this.voiceEnabled) {
+        await this.client.fetchVoice(newLang, this.state.register);
+        if (this.state.register !== DEFAULT_REGISTER) {
+          await this.client.fetchVoice(newLang, DEFAULT_REGISTER);
+        }
+      }
+    } catch (e: any) {
+      // A failed switch must surface an error and clear loading instead of
+      // wedging isLoading:true forever (and it must not reject — these are
+      // commonly called un-awaited). If a newer switch superseded us, let it
+      // own the final state.
+      if (reqId !== this.langReq) return;
+      this.emit({ isLoading: false, error: e?.message || `Failed to load language "${newLang}"` });
+      return;
     }
 
     if (reqId !== this.langReq) return; // superseded by a newer setLang
@@ -210,7 +229,7 @@ export class BhashaStore {
       loadFontForLang(newLang);
       applyLangToDocument(newLang);
     }
-    this.emit({ lang: newLang, isLoading: false });
+    this.emit({ lang: newLang, isLoading: false, error: null });
     this.onLanguageChange?.(newLang);
   }
 
@@ -218,13 +237,19 @@ export class BhashaStore {
   async setRegister(newRegister: Register): Promise<void> {
     if (newRegister === this.state.register) return;
     const reqId = ++this.registerReq;
-    this.emit({ isLoading: true });
+    this.emit({ isLoading: true, error: null });
 
-    await this.client.fetchTranslations(this.state.lang, newRegister);
-    if (this.voiceEnabled) await this.client.fetchVoice(this.state.lang, newRegister);
+    try {
+      await this.client.fetchTranslations(this.state.lang, newRegister);
+      if (this.voiceEnabled) await this.client.fetchVoice(this.state.lang, newRegister);
+    } catch (e: any) {
+      if (reqId !== this.registerReq) return;
+      this.emit({ isLoading: false, error: e?.message || `Failed to load register "${newRegister}"` });
+      return;
+    }
 
     if (reqId !== this.registerReq) return;
-    this.emit({ register: newRegister, isLoading: false });
+    this.emit({ register: newRegister, isLoading: false, error: null });
   }
 
   /** Set the user segment; flips register if a segmentRule matches. */

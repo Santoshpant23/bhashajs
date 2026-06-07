@@ -345,7 +345,8 @@ export class TranslationClient {
     params?: Record<string, string | number>
   ): string {
     const chain = getFallbackChain(lang);
-    const resolvedKey = this.resolveKey(key, lang, register, chain, params);
+    const hasCount = params != null && params.count !== undefined;
+    const count = hasCount ? Number(params.count) : 0;
 
     let result: string | undefined;
 
@@ -354,11 +355,31 @@ export class TranslationClient {
     // casual Hindi but only formal Hindi exists, falling back to formal Hindi
     // is better than falling back to casual English. So per-lang we try
     // [register, default], then move on.
+    //
+    // PLURALIZATION happens PER CELL, using each fallback language's OWN rule —
+    // not the requested language's. Otherwise a Hindi count=0 (category "one")
+    // that falls back to English would pick English's "_one" cell and render
+    // English's singular ("0 item") instead of its correct plural ("0 items").
+    // A language's own base key also wins over a fallback language's plural form.
     outer: for (const fallbackLang of chain) {
       for (const reg of registerFallback(register)) {
         const langCache = this.cache[bundleKey(fallbackLang, reg)];
-        if (langCache && langCache[resolvedKey]) {
-          result = langCache[resolvedKey];
+        if (!langCache) continue;
+
+        if (hasCount) {
+          const category = getPluralCategory(count, fallbackLang);
+          if (langCache[`${key}_${category}`]) {
+            result = langCache[`${key}_${category}`];
+            break outer;
+          }
+          if (category !== "other" && langCache[`${key}_other`]) {
+            result = langCache[`${key}_other`];
+            break outer;
+          }
+        }
+
+        if (langCache[key]) {
+          result = langCache[key];
           break outer;
         }
       }
@@ -390,51 +411,6 @@ export class TranslationClient {
     return result;
   }
 
-  /**
-   * Resolve the actual translation key, handling pluralization.
-   */
-  private resolveKey(
-    key: string,
-    lang: string,
-    register: Register,
-    chain: string[],
-    params?: Record<string, string | number>
-  ): string {
-    // Only do pluralization if there's a count parameter
-    if (!params || params.count === undefined) {
-      return key;
-    }
-
-    const count = Number(params.count);
-    const category = getPluralCategory(count, lang);
-
-    const pluralKey = `${key}_${category}`;
-    if (this.keyExistsInChain(pluralKey, chain, register)) {
-      return pluralKey;
-    }
-
-    if (category !== "other") {
-      const otherKey = `${key}_other`;
-      if (this.keyExistsInChain(otherKey, chain, register)) {
-        return otherKey;
-      }
-    }
-
-    return key;
-  }
-
-  /**
-   * Check if a key exists in any (language, register) in the chain.
-   */
-  private keyExistsInChain(key: string, chain: string[], register: Register): boolean {
-    for (const lang of chain) {
-      for (const reg of registerFallback(register)) {
-        const cache = this.cache[bundleKey(lang, reg)];
-        if (cache && cache[key]) return true;
-      }
-    }
-    return false;
-  }
 }
 
 /** Within a single language, prefer the requested register but fall back to default. */

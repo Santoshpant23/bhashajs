@@ -168,19 +168,31 @@ export function I18nProvider({
 
       const reqId = ++langReqRef.current;
       setIsLoading(true);
-      await client.fetchTranslations(newLang, currentRegister);
-      // Pre-warm default register for register-fallback if needed.
-      if (currentRegister !== DEFAULT_REGISTER) {
-        await client.fetchTranslations(newLang, DEFAULT_REGISTER);
-      }
-      // Voice mode: keep the IPA/SSML bundle in sync with the active language.
-      // Without this, formatPhonetic/formatSSML would return empty strings for
-      // every key after a language switch until the next remount.
-      if (voiceEnabled) {
-        await client.fetchVoice(newLang, currentRegister);
+      setError(null);
+      try {
+        await client.fetchTranslations(newLang, currentRegister);
+        // Pre-warm default register for register-fallback if needed.
         if (currentRegister !== DEFAULT_REGISTER) {
-          await client.fetchVoice(newLang, DEFAULT_REGISTER);
+          await client.fetchTranslations(newLang, DEFAULT_REGISTER);
         }
+        // Voice mode: keep the IPA/SSML bundle in sync with the active language.
+        // Without this, formatPhonetic/formatSSML would return empty strings for
+        // every key after a language switch until the next remount.
+        if (voiceEnabled) {
+          await client.fetchVoice(newLang, currentRegister);
+          if (currentRegister !== DEFAULT_REGISTER) {
+            await client.fetchVoice(newLang, DEFAULT_REGISTER);
+          }
+        }
+      } catch (e: any) {
+        // A failed switch must surface an error and clear loading rather than
+        // wedge isLoading:true forever. If a newer switch superseded us, let it
+        // own the final state.
+        if (reqId !== langReqRef.current) return;
+        setIsLoading(false);
+        setError(e?.message || `Failed to load language "${newLang}"`);
+        console.error("[BhashaJS] setLang error:", e);
+        return;
       }
 
       // A newer setLang superseded this one while we were fetching — let it
@@ -209,10 +221,19 @@ export function I18nProvider({
       // Fetch the new register bundle for the current lang (and English
       // fallback) so the switch is instant once the network round-trips.
       setIsLoading(true);
-      await client.fetchTranslations(currentLang, newRegister);
-      // Voice bundle has to follow the register the same way text does.
-      if (voiceEnabled) {
-        await client.fetchVoice(currentLang, newRegister);
+      setError(null);
+      try {
+        await client.fetchTranslations(currentLang, newRegister);
+        // Voice bundle has to follow the register the same way text does.
+        if (voiceEnabled) {
+          await client.fetchVoice(currentLang, newRegister);
+        }
+      } catch (e: any) {
+        if (reqId !== registerReqRef.current) return;
+        setIsLoading(false);
+        setError(e?.message || `Failed to load register "${newRegister}"`);
+        console.error("[BhashaJS] setRegister error:", e);
+        return;
       }
 
       // Superseded by a newer register/segment switch — don't commit stale state.
@@ -239,9 +260,18 @@ export function I18nProvider({
       if (mapped && mapped !== currentRegister) {
         const reqId = ++registerReqRef.current;
         setIsLoading(true);
-        await client.fetchTranslations(currentLang, mapped);
-        if (voiceEnabled) {
-          await client.fetchVoice(currentLang, mapped);
+        setError(null);
+        try {
+          await client.fetchTranslations(currentLang, mapped);
+          if (voiceEnabled) {
+            await client.fetchVoice(currentLang, mapped);
+          }
+        } catch (e: any) {
+          if (reqId !== registerReqRef.current) return;
+          setIsLoading(false);
+          setError(e?.message || `Failed to load register "${mapped}"`);
+          console.error("[BhashaJS] setSegment error:", e);
+          return;
         }
 
         // Superseded by a newer register/segment switch — don't commit stale state.

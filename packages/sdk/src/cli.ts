@@ -84,12 +84,24 @@ function loadConfig(flags: Record<string, string | boolean>): Config {
 }
 
 // ─── key extraction from JSON bundles ──────────────────────────────
+const REGISTER_NAMES = new Set(["default", "formal", "casual"]);
+
 // A locale file is either flat ({ "hero.title": "..." }) or register-nested
 // ({ "hero.title": { "default": "..." } }). In both, the translation KEY is
-// the top-level property, so Object.keys is what we want.
+// the top-level property, so Object.keys is what we want — UNLESS the bundle is
+// itself a bare register map ({ "default": {...}, "casual": {...} }), which
+// would yield bogus keys like ["default","casual"]. Guard against that shape.
 function keysFromBundle(obj: unknown): string[] {
   if (!obj || typeof obj !== "object" || Array.isArray(obj)) return [];
-  return Object.keys(obj as Record<string, unknown>);
+  const names = Object.keys(obj as Record<string, unknown>);
+  if (names.length > 0 && names.every((k) => REGISTER_NAMES.has(k))) {
+    err(
+      `! locale bundle looks like a bare register map (${names.join(", ")}) — ` +
+        `expected translation keys at the top level; skipping.`
+    );
+    return [];
+  }
+  return names;
 }
 
 function collectLocalKeys(cfg: Config): string[] {
@@ -235,18 +247,73 @@ function cmdInit(cfg: Config) {
 
   log("");
   log("Next:");
-  log("  1. Add your keys to the locale file(s).");
+  log("  1. Add your keys to the locale file(s) — or set projectKey to pull from the hosted API.");
   log("  2. Run `npx bhasha pull` to generate type-safe keys.");
-  log("  3. Make sure the generated .d.ts is picked up by your tsconfig.");
+  log("     (pull wires the generated .d.ts into your tsconfig automatically.)");
 }
 
 async function cmdPull(cfg: Config, flags: Record<string, string | boolean>) {
-  const remote = flags["remote"] === true || (!!cfg.projectKey && !existsSync(cfg.localesDir));
+  // Decide the key source. `--remote`/`--local` win explicitly. Otherwise,
+  // default to the hosted API whenever a projectKey is configured — the local
+  // locales/ that `init` scaffolds is just a starter stub, NOT the source of
+  // truth, so the old `!existsSync(localesDir)` heuristic (which init always
+  // makes false) silently pulled the 2-key stub for every hosted user.
+  const wantsLocal = flags["local"] === true;
+  const wantsRemote = flags["remote"] === true;
+  const remote = wantsRemote || (!wantsLocal && !!cfg.projectKey);
+  if (!remote && cfg.projectKey && !wantsLocal) {
+    err("! a projectKey is set but pulling from local files — pass --remote to pull from the hosted API.");
+  }
+
   const keys = remote ? await collectRemoteKeys(cfg) : collectLocalKeys(cfg);
   if (keys.length === 0) die("No keys found.");
   writeFileSync(cfg.out, generateDts(keys));
   log(`✓ ${cfg.out} — ${keys.length} type-safe keys (${remote ? "remote" : "local"} source)`);
   log(`  t() and <Trans> now autocomplete and error on a typo'd key.`);
+
+  // The generated declaration only takes effect if TypeScript actually compiles
+  // it — wire it into tsconfig (or tell the user exactly how to).
+  wireTsconfig(cfg.out);
+}
+
+/**
+ * Make sure the generated .d.ts is picked up by TypeScript. If tsconfig.json is
+ * strict JSON with an `include` array that doesn't list the file, add it; if
+ * it's JSONC (comments) or unparseable, print the exact line to add by hand.
+ * Never throws — type-gen must not be blocked by tsconfig surgery.
+ */
+function wireTsconfig(outFile: string): void {
+  const TSCONFIG = "tsconfig.json";
+  const manual = () => {
+    log("");
+    log(`  ⚠ Ensure TypeScript compiles ${outFile}. Add it to your ${TSCONFIG} "include":`);
+    log(`      "include": ["src", ${JSON.stringify(outFile)}]`);
+  };
+  try {
+    if (!existsSync(TSCONFIG)) return manual();
+    const raw = readFileSync(TSCONFIG, "utf8");
+    if (raw.includes(outFile)) return; // already referenced
+    // Only auto-edit strict JSON; never risk corrupting a JSONC tsconfig.
+    if (/\/\/|\/\*/.test(raw)) return manual();
+    let parsed: any;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return manual();
+    }
+    if (!parsed || typeof parsed !== "object") return manual();
+    // No `include` (and no `files`) → TS compiles every .ts/.d.ts in the tree,
+    // so a root-level .d.ts is already picked up. Nothing to do.
+    if (!Array.isArray(parsed.include)) {
+      if (Array.isArray(parsed.files)) return manual();
+      return;
+    }
+    parsed.include.push(outFile);
+    writeFileSync(TSCONFIG, JSON.stringify(parsed, null, 2) + "\n");
+    log(`  ✓ added ${outFile} to ${TSCONFIG} "include"`);
+  } catch {
+    manual();
+  }
 }
 
 function cmdScan(cfg: Config, flags: Record<string, string | boolean>) {
@@ -282,7 +349,8 @@ function cmdHelp() {
 
 Usage:
   bhasha init                     scaffold bhasha.config.json + locales/
-  bhasha pull [--remote]          generate type-safe keys from locales or the API
+  bhasha pull [--remote|--local]  generate type-safe keys from the API or local locales
+                                  (defaults to the hosted API when a projectKey is set)
   bhasha scan [--strict]          find t()/<Trans> keys; report missing/unused
 
 Flags (override bhasha.config.json):
