@@ -46,9 +46,17 @@ function validateEnv() {
   // every user's token trivially forgeable. Refuse to start on a weak secret.
   const jwtSecret = process.env.JWT_SECRET || "";
   const WEAK_JWT_SECRETS = new Set(["something-todo", "changeme", "secret", "jwt_secret", "your-secret-here"]);
-  if (jwtSecret.length < 32 || WEAK_JWT_SECRETS.has(jwtSecret.toLowerCase())) {
+  // The .env.example placeholder is >32 chars and not in the set above, so it
+  // would otherwise pass — reject any placeholder-looking secret too, so copying
+  // .env.example can't boot with a publicly-known signing key.
+  const PLACEHOLDER_RE = /replace|placeholder|example|changeme|your-secret|openssl|rand-hex|xxxx/i;
+  if (
+    jwtSecret.length < 32 ||
+    WEAK_JWT_SECRETS.has(jwtSecret.toLowerCase()) ||
+    PLACEHOLDER_RE.test(jwtSecret)
+  ) {
     console.error(
-      "FATAL: JWT_SECRET is too weak. Use at least 32 random characters.\n" +
+      "FATAL: JWT_SECRET is weak or still the placeholder. Use at least 32 random characters.\n" +
       "Generate one with:  openssl rand -hex 32"
     );
     process.exit(1);

@@ -192,12 +192,17 @@ router.get(
       });
 
       // ─── CSV export ───────────────────────────────────────────
-      // One row per history event so the file reads like an audit log. Order
-      // matches the JSON: keys A→Z, events newest-first within each key.
+      // Every regulated KEY appears (with its current review/complete state),
+      // followed by its history events. A key with NO history (e.g. a
+      // pack-imported one) still gets a state row, so it can't vanish from the
+      // audit. Keys A→Z, events newest-first within each key.
       if (typeof format === "string" && format.toLowerCase() === "csv") {
         const header = [
           "key",
           "citation",
+          "reviewClean",
+          "complete",
+          "missingLanguages",
           "lang",
           "register",
           "oldValue",
@@ -209,11 +214,22 @@ router.get(
         ];
         const rows: string[] = [header.map(csvField).join(",")];
         for (const k of keys) {
+          const stateCols = [
+            k.key,
+            k.mandatedBy,
+            String(k.reviewClean),
+            String(k.complete),
+            k.missingLanguages.join(" "),
+          ];
+          if (k.history.length === 0) {
+            // No audit events yet — still record the key + its current state.
+            rows.push([...stateCols, "", "", "", "", "", "", "", ""].map(csvField).join(","));
+            continue;
+          }
           for (const e of k.history) {
             rows.push(
               [
-                k.key,
-                k.mandatedBy,
+                ...stateCols,
                 e.lang,
                 e.register,
                 e.oldValue,

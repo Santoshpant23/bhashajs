@@ -12,5 +12,12 @@ export default defineConfig({
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+    // jsdom component tests render the real editor and drive it with
+    // user-event. Under parallel CI load a single render+interaction can take
+    // noticeably longer than vitest's 5s default and time out spuriously (the
+    // editor's escape test flaked once this way). Give every test and hook a
+    // generous ceiling so a slow-but-correct run never reads as a failure.
+    testTimeout: 15000,
+    hookTimeout: 15000,
   },
 });

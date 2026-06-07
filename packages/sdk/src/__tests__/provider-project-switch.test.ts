@@ -45,12 +45,13 @@ describe("I18nProvider — project switch resets locale state", () => {
   it("resets pending refs and committed state to the NEW project's defaults", () => {
     // Simulate the OLD project having switched to hi/formal with langs loaded.
     const localeReqRef = ref(5);
+    const initReqRef = ref(5);
     const pendingLangRef = ref("hi");
     const pendingRegisterRef = ref<Register>("formal");
     const { calls, setters } = makeSetterSpies();
 
     resetLocaleForProjectSwitch(
-      { localeReqRef, pendingLangRef, pendingRegisterRef },
+      { localeReqRef, initReqRef, pendingLangRef, pendingRegisterRef },
       { defaultLang: "en", register: "default" },
       setters
     );
@@ -70,12 +71,13 @@ describe("I18nProvider — project switch resets locale state", () => {
 
   it("honors a non-default new-project register (e.g. segment-resolved 'casual')", () => {
     const localeReqRef = ref(0);
+    const initReqRef = ref(0);
     const pendingLangRef = ref("ne");
     const pendingRegisterRef = ref<Register>("formal");
     const { calls, setters } = makeSetterSpies();
 
     resetLocaleForProjectSwitch(
-      { localeReqRef, pendingLangRef, pendingRegisterRef },
+      { localeReqRef, initReqRef, pendingLangRef, pendingRegisterRef },
       { defaultLang: "hi", register: "casual" },
       setters
     );
@@ -98,7 +100,7 @@ describe("I18nProvider — project switch invalidates in-flight requests", () =>
 
     // The project switch happens. The render-phase reset bumps the counter.
     resetLocaleForProjectSwitch(
-      { localeReqRef, pendingLangRef: ref("x"), pendingRegisterRef: ref<Register>("default") },
+      { localeReqRef, initReqRef: ref(0), pendingLangRef: ref("x"), pendingRegisterRef: ref<Register>("default") },
       { defaultLang: "en", register: "default" },
       makeSetterSpies().setters
     );
@@ -126,7 +128,7 @@ describe("I18nProvider — project switch invalidates in-flight requests", () =>
 
     // Meanwhile the user switches projects.
     resetLocaleForProjectSwitch(
-      { localeReqRef, pendingLangRef: ref("hi"), pendingRegisterRef: ref<Register>("default") },
+      { localeReqRef, initReqRef: ref(0), pendingLangRef: ref("hi"), pendingRegisterRef: ref<Register>("default") },
       { defaultLang: "en", register: "default" },
       makeSetterSpies().setters
     );
@@ -146,7 +148,7 @@ describe("I18nProvider — project switch invalidates in-flight requests", () =>
 
     // Switch.
     resetLocaleForProjectSwitch(
-      { localeReqRef, pendingLangRef: ref("hi"), pendingRegisterRef: ref<Register>("default") },
+      { localeReqRef, initReqRef: ref(0), pendingLangRef: ref("hi"), pendingRegisterRef: ref<Register>("default") },
       { defaultLang: "en", register: "default" },
       makeSetterSpies().setters
     );

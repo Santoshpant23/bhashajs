@@ -215,3 +215,80 @@ describe("TranslationEditor — a real edit still saves", () => {
     expect(body.editedLang).toBe("en");
   });
 });
+
+describe("TranslationEditor — Ctrl+S then blur fires exactly ONE PUT", () => {
+  it("does not double-save the same cell when Ctrl+S is immediately followed by blur", async () => {
+    const user = userEvent.setup();
+    render(<TranslationEditor />);
+
+    const cell = await findEnCell();
+    await user.click(cell);          // focus → captures baseline "Hello"
+    await user.type(cell, "!");      // genuine edit → "Hello!"
+
+    // Ctrl+S kicks off a save. The PUT is in flight (mock resolves async).
+    await user.keyboard("{Control>}s{/Control}");
+    // Blur immediately after — BEFORE the first PUT resolves. Previously the
+    // change-guard's baseline was only refreshed after the response, so this
+    // blur saw value≠baseline and saved AGAIN. With the optimistic baseline
+    // refresh + in-flight guard, this second save is skipped.
+    await user.tab();
+
+    // Let every queued microtask/save settle, then assert exactly one PUT.
+    await waitFor(() => {
+      expect(put).toHaveBeenCalledTimes(1);
+    });
+    // And give a stray second PUT a chance to (wrongly) appear.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(put).toHaveBeenCalledTimes(1);
+
+    const [url, body] = put.mock.calls[0];
+    expect(url).toBe("/translations/t1");
+    expect(body.editedLang).toBe("en");
+  });
+
+  it("a no-op double-save (save, then save again with no new edit) issues only ONE PUT", async () => {
+    const user = userEvent.setup();
+    render(<TranslationEditor />);
+
+    const cell = await findEnCell();
+    await user.click(cell);
+    await user.type(cell, "!");      // genuine edit → "Hello!"
+
+    // First Ctrl+S saves and (once resolved) re-baselines to "Hello!".
+    await user.keyboard("{Control>}s{/Control}");
+    await waitFor(() => {
+      expect(put).toHaveBeenCalledTimes(1);
+    });
+
+    // A SECOND Ctrl+S with no new edit is a no-op — the baseline already equals
+    // the current value, so the change-guard short-circuits before any PUT.
+    await user.keyboard("{Control>}s{/Control}");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
+  it("a GENUINE new edit after a save still saves (guard releases per cell)", async () => {
+    const user = userEvent.setup();
+    render(<TranslationEditor />);
+
+    const cell = await findEnCell();
+    await user.click(cell);
+    await user.type(cell, "!");      // "Hello!"
+    await user.keyboard("{Control>}s{/Control}");
+    await waitFor(() => {
+      expect(put).toHaveBeenCalledTimes(1);
+    });
+
+    // Type more, then blur. The in-flight guard has released and the baseline
+    // is now "Hello!", so this distinct value must save (no over-blocking).
+    await user.type(cell, "?");      // "Hello!?"
+    await user.tab();
+
+    await waitFor(() => {
+      expect(put).toHaveBeenCalledTimes(2);
+    });
+    // Second PUT carries the newer English value.
+    const secondBody = put.mock.calls[1][1];
+    expect(secondBody.translations.en.default).toBe("Hello!?");
+  });
+});

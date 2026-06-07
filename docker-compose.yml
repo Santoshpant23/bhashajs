@@ -45,6 +45,12 @@ services:
       PORT: 5000
       MONGO_CONNECTION_URL: mongodb://root:${MONGO_ROOT_PASSWORD:-changeme}@mongo:27017/bhashajs?authSource=admin
       CORS_ORIGIN: ${CORS_ORIGIN:-https://bhashajs.com}
+    volumes:
+      # Mount the service-account dir so the Vertex AI path works on self-host:
+      # drop sa.json in ./credentials/, then set GEMINI_USE_VERTEX=true +
+      # GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/sa.json in .env. Harmless
+      # for the default AI Studio key path (the dir is simply unused).
+      - ./credentials:/app/credentials:ro
 
   dashboard:
     build:

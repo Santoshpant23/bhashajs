@@ -397,6 +397,11 @@ export default function TranslationEditor() {
   // edited value and persist the cancelled copy. The blur handler checks and
   // clears this flag to skip exactly one save after an Escape-cancel.
   const skipNextBlurSaveRef = useRef<string | null>(null);
+  // Per-cell "save in flight" guard. Holds the "id:lang" keys with a PUT
+  // currently pending. A second save for the SAME cell (e.g. Ctrl+S then the
+  // blur it triggers, which fires before the PUT resolves) is dropped so the
+  // same edit isn't persisted twice. Cleared in the save's finally block.
+  const inFlightSavesRef = useRef<Set<string>>(new Set());
   const [cellFocused, setCellFocused] = useState(false);
 
   // History
@@ -599,17 +604,50 @@ export default function TranslationEditor() {
     // flip an unreviewed AI/pending cell to a servable state. So a save must
     // only fire when the value ACTUALLY changed versus what was last loaded or
     // persisted. `originalValueRef` is the per-(id, lang) baseline captured on
-    // focus (blur path) and refreshed after each successful save below; the
-    // Ctrl+S path reuses that same baseline, so an unchanged AI cell is never
-    // promoted to "human" just because the owner pressed Ctrl+S over it.
-    if (editedLang) {
-      const refKey = `${translation._id}:${editedLang}`;
-      const currentValue = valueAt(translation, editedLang, editedRegister);
+    // focus (blur path) and refreshed across each save below; the Ctrl+S path
+    // reuses that same baseline, so an unchanged AI cell is never promoted to
+    // "human" just because the owner pressed Ctrl+S over it.
+    //
+    // `savedValue` is the exact value this save is persisting for the edited
+    // cell. Captured up front so the success handler can tell whether a NEWER
+    // edit landed while the PUT was in flight (don't clear `hasUnsaved` /
+    // re-baseline blindly).
+    const savedValue = editedLang
+      ? valueAt(translation, editedLang, editedRegister)
+      : undefined;
+    const refKey = editedLang ? `${translation._id}:${editedLang}` : null;
+    // Prior baseline for `refKey`, captured before the optimistic overwrite so a
+    // failed PUT can restore it (see catch).
+    let refKeyHadBaseline = false;
+    let priorBaseline: string | undefined;
+
+    if (editedLang && refKey) {
       // Only guard when we have a baseline for this cell (set on focus / prior
       // save). Without one we can't prove "unchanged", so fall through and save.
-      if (refKey in originalValueRef.current && currentValue === originalValueRef.current[refKey]) {
+      if (refKey in originalValueRef.current && savedValue === originalValueRef.current[refKey]) {
         return; // No-op: nothing changed → no PUT, no provenance change.
       }
+      // ─── In-flight guard (double-PUT fix) ──────────────────────────────────
+      // Ctrl+S calls this, then the blur it triggers calls it AGAIN before the
+      // first PUT resolves. Because the baseline below is refreshed OPTIMISTICALLY
+      // (and the response handler refreshes it again), the second call would
+      // normally be caught by the no-op guard — but the optimistic refresh races
+      // React's re-render of `translation`, so we also hard-block any concurrent
+      // save for the same cell. Exactly one PUT fires per cell per in-flight
+      // window; a genuine new edit after the PUT resolves still saves.
+      if (inFlightSavesRef.current.has(refKey)) {
+        return;
+      }
+      inFlightSavesRef.current.add(refKey);
+      // Capture the prior baseline so we can roll it back if the PUT fails.
+      refKeyHadBaseline = refKey in originalValueRef.current;
+      priorBaseline = originalValueRef.current[refKey];
+      // Refresh the no-op baseline OPTIMISTICALLY, at the START of the save, to
+      // the value we're about to persist. An immediate second save for this
+      // cell (same value) now sees value === baseline and is skipped, so Ctrl+S
+      // then blur is one PUT, not two. If the PUT fails we roll the baseline
+      // back in the catch so a retry still goes through.
+      originalValueRef.current[refKey] = savedValue as string;
     }
 
     setSaving(translation._id);
@@ -631,11 +669,25 @@ export default function TranslationEditor() {
       const serverSource = editedLang
         ? saved?.sources?.[editedLang]?.[editedRegister]
         : undefined;
+      // Did a NEWER edit land on this cell while the PUT was in flight? We read
+      // the LATEST value from state (the closure's `translation` is stale) inside
+      // the updater below. If the live value still equals what we saved, the
+      // save is current → safe to mark clean. If it diverged, the user typed
+      // more; we must NOT clear the dirty flag (that would risk losing the newer
+      // edit and, on a re-save, duplicate audit history).
+      let cellIsStillSavedValue = true;
       setTranslations((prev) =>
         prev.map((t) => {
           if (t._id !== translation._id) return t;
+          if (editedLang && savedValue !== undefined) {
+            cellIsStillSavedValue =
+              valueAt(t, editedLang, editedRegister) === savedValue;
+          }
           const updatedSources = { ...(t.sources || {}) };
-          if (editedLang && serverSource) {
+          // Only stamp the server's provenance when the cell hasn't changed
+          // since the save — stamping it onto a newer, not-yet-saved value would
+          // mislabel that pending edit as already-persisted.
+          if (editedLang && serverSource && cellIsStillSavedValue) {
             updatedSources[editedLang] = {
               ...(updatedSources[editedLang] || {}),
               [editedRegister]: serverSource,
@@ -646,16 +698,20 @@ export default function TranslationEditor() {
           return { ...t, source: saved?.source ?? t.source, sources: updatedSources };
         })
       );
-      // Refresh the no-op baseline to what we just persisted so an immediate
-      // repeat save (e.g. blur then Ctrl+S) is correctly skipped.
-      if (editedLang) {
-        originalValueRef.current[`${translation._id}:${editedLang}`] = valueAt(
-          translation,
-          editedLang,
-          editedRegister
-        );
+      if (editedLang && refKey) {
+        // Refresh the no-op baseline to what was actually persisted. When the
+        // cell is unchanged this matches the optimistic baseline set at the
+        // start (harmless). When a NEWER edit landed mid-flight, the baseline is
+        // still the just-saved value — so the next save sees current ≠ baseline
+        // and persists the newer content (no lost edit), while THIS handler
+        // leaves the dirty flag set below.
+        originalValueRef.current[refKey] = savedValue as string;
       }
-      setHasUnsaved(false);
+      // Only mark clean when no newer edit landed mid-flight. A late response
+      // must never clear `hasUnsaved` for content the user has since changed.
+      if (cellIsStillSavedValue) {
+        setHasUnsaved(false);
+      }
       fetchStats();
     } catch (e) {
       // The PUT failed — the edit was NOT persisted. Keep the unsaved-changes
@@ -663,9 +719,20 @@ export default function TranslationEditor() {
       // edit saved (silent data loss in a translation tool).
       const msg = getErrorMessage(e);
       console.error("Failed to save:", msg);
+      // Roll the optimistic baseline back so a retry (blur/Ctrl+S) is NOT
+      // mistaken for a no-op and actually re-attempts the save.
+      if (refKey) {
+        if (refKeyHadBaseline) {
+          originalValueRef.current[refKey] = priorBaseline as string;
+        } else {
+          delete originalValueRef.current[refKey];
+        }
+      }
       setHasUnsaved(true);
       showToast(`Save failed — your edit was NOT saved: ${msg}`, "error");
     } finally {
+      // Release the per-cell in-flight guard so the NEXT genuine edit can save.
+      if (refKey) inFlightSavesRef.current.delete(refKey);
       setTimeout(() => setSaving(null), 600);
     }
   }

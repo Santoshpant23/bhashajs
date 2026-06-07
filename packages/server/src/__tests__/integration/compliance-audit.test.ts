@@ -152,7 +152,7 @@ describe("compliance audit trail", () => {
     const lines = csv.trim().split(/\r\n/);
     // Header + at least the approval event row.
     expect(lines[0]).toBe(
-      "key,citation,lang,register,oldValue,newValue,source,approverName,approverEmail,timestamp"
+      "key,citation,reviewClean,complete,missingLanguages,lang,register,oldValue,newValue,source,approverName,approverEmail,timestamp"
     );
     // The citation contains a comma → it must be quoted in the CSV.
     expect(csv).toContain(`"${citation}"`);
