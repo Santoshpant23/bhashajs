@@ -33,16 +33,26 @@ import { sendSuccess, sendError } from "../utils/response";
 import { validateRequired, validateObjectId } from "../utils/validate";
 import { getAIProvider, TranslationInput, MemoryExample, GlossaryTerm, VoiceInput } from "../services/ai-provider";
 import GlossaryEntry from "../models/GlossaryEntry";
+import Comment from "../models/Comment";
 import {
   coerceRegister,
   readValue,
   writeValue,
+  writeVoiceCell,
   iterateCells,
   DEFAULT_REGISTER,
   Register,
 } from "../utils/registers";
 import { isValidRegister, REGISTERS } from "../models/Translation";
 import { resolveWriteSource } from "../utils/compliance";
+import { withTransactionOrFallback } from "../utils/transaction";
+
+// Escape user input destined for a Mongo $regex so it's matched as a literal
+// substring. Without this, a crafted pattern like "(a+)+$" forces catastrophic
+// backtracking (ReDoS) over the whole collection.
+function escapeRegex(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 const router = Router();
 
@@ -61,7 +71,11 @@ async function recordHistory(
   source: string,
   changedBy: string
 ) {
-  if (oldValue === newValue) return; // no change
+  // Skip no-op edits — EXCEPT approval/rejection events, which are provenance
+  // changes worth recording in the audit trail even when the text is unchanged
+  // (an owner approving a pending regulated string is an auditable action).
+  const provenanceEvent = source === "approved" || source === "rejected";
+  if (oldValue === newValue && !provenanceEvent) return;
   try {
     await TranslationHistory.create({
       translationId,
@@ -141,10 +155,15 @@ router.get(
         return sendSuccess(res, 200, flat);
       }
 
-      // Build query with optional search
+      // Build query with optional search. The input is escaped + length-capped
+      // so it's a literal case-insensitive SUBSTRING match on the key — never a
+      // user-controlled regex that could ReDoS the shared DB. (Escaping makes
+      // the pattern linear, which is what removes the catastrophic-backtracking
+      // risk; matching stays substring so "checkout" still finds "cart.checkout".)
       const query: any = { projectId };
       if (search && typeof search === "string" && search.trim()) {
-        query.key = { $regex: search.trim(), $options: "i" };
+        const term = search.trim().slice(0, 100);
+        query.key = { $regex: escapeRegex(term), $options: "i" };
       }
 
       // Pagination
@@ -674,10 +693,14 @@ router.delete("/:id", async (req: AuthRequest, res: Response) => {
       return sendError(res, 403, "Only project owners can delete translations");
     }
 
-    await translation.deleteOne();
-
-    // Clean up history for this translation
-    await TranslationHistory.deleteMany({ translationId: id });
+    // Delete the key and ALL its dependents atomically (or, on a standalone
+    // Mongo, children-before-parent). Previously only history was cleaned up,
+    // leaving comments orphaned.
+    await withTransactionOrFallback(async (session) => {
+      await Comment.deleteMany({ translationId: id }, { session });
+      await TranslationHistory.deleteMany({ translationId: id }, { session });
+      await Translation.deleteOne({ _id: id }, { session });
+    });
 
     return sendSuccess(res, 200, { message: "Translation deleted" });
   } catch (e) {
@@ -1168,15 +1191,12 @@ router.post(
         const result = aiResults[t.key];
         if (!result) continue;
 
-        // Write into the nested voice Map: voice[lang][register] = { ipa, ssml }
-        const voiceField = (t as any).voice as Map<string, Map<string, any>>;
-        let langMap = voiceField.get(lang);
-        if (!langMap) {
-          langMap = new Map();
-          voiceField.set(lang, langMap);
-        }
-        langMap.set(register, { ipa: result.ipa, ssml: result.ssml });
-        t.markModified("voice");
+        // Write voice[lang][register] = { ipa, ssml } through the shared helper.
+        // The previous hand-rolled write set a fresh inner Map then mutated the
+        // LOCAL reference — but Mongoose stores its own cast copy, so the inner
+        // write landed on a detached object and nothing persisted (the route
+        // reported success while saving an empty voice map).
+        writeVoiceCell(t, lang, register, { ipa: result.ipa, ssml: result.ssml });
         t.updatedAt = new Date();
         await t.save();
         generatedKeys.push(t.key);

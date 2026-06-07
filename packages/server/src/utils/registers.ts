@@ -69,6 +69,34 @@ export function writeValue(
   }
 }
 
+/**
+ * Write a voice cell — voice[lang][register] = { ipa, ssml } — on a
+ * Mongoose-managed Map<lang, Map<register, object>>. Same orphan-avoidance as
+ * writeValue: after `map.set(lang, new Map())` we re-fetch the live cast inner
+ * Map before mutating, otherwise `inner.set(...)` writes to a DETACHED object
+ * (Mongoose stored its own copy) and the change is silently lost on save.
+ */
+export function writeVoiceCell(
+  doc: any,
+  lang: string,
+  register: Register,
+  value: { ipa?: string; ssml?: string }
+): void {
+  if (!doc.voice) {
+    doc.voice = new Map();
+  }
+  const map = doc.voice as Map<string, Map<string, unknown>>;
+  let inner = map.get(lang);
+  if (!inner) {
+    map.set(lang, new Map());
+    inner = map.get(lang) as Map<string, unknown>;
+  }
+  inner.set(register, value);
+  if (typeof doc.markModified === "function") {
+    doc.markModified("voice");
+  }
+}
+
 /** Delete a (lang, register) cell. Returns true if the cell existed. */
 export function deleteValue(
   doc: any,

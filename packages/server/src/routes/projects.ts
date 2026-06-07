@@ -21,8 +21,12 @@ import ProjectMember from "../models/ProjectMember";
 import Translation from "../models/Translation";
 import TranslationMemory from "../models/TranslationMemory";
 import TranslationHistory from "../models/TranslationHistory";
+import Comment from "../models/Comment";
+import GlossaryEntry from "../models/GlossaryEntry";
+import Notification from "../models/Notification";
 import User from "../models/User";
 import { sendSuccess, sendError } from "../utils/response";
+import { withTransactionOrFallback } from "../utils/transaction";
 import {
   validateRequired,
   validateObjectId,
@@ -231,16 +235,22 @@ router.delete(
       const idError = validateObjectId(id as string, "Project ID");
       if (idError) return sendError(res, 400, idError);
 
-      const project = await Project.findByIdAndDelete(id);
+      const project = await Project.findById(id);
       if (!project) return sendError(res, 404, "Project not found");
 
-      // Cascade delete all related data
-      await Promise.all([
-        Translation.deleteMany({ projectId: id }),
-        TranslationMemory.deleteMany({ projectId: id }),
-        TranslationHistory.deleteMany({ projectId: id }),
-        ProjectMember.deleteMany({ projectId: id }),
-      ]);
+      // Cascade-delete ALL related data atomically (or, on a standalone Mongo,
+      // dependents-before-parent). The previous version deleted the project
+      // FIRST and missed Comment/GlossaryEntry/Notification, orphaning them.
+      await withTransactionOrFallback(async (session) => {
+        await Translation.deleteMany({ projectId: id }, { session });
+        await TranslationMemory.deleteMany({ projectId: id }, { session });
+        await TranslationHistory.deleteMany({ projectId: id }, { session });
+        await Comment.deleteMany({ projectId: id }, { session });
+        await GlossaryEntry.deleteMany({ projectId: id }, { session });
+        await Notification.deleteMany({ projectId: id }, { session });
+        await ProjectMember.deleteMany({ projectId: id }, { session });
+        await Project.deleteOne({ _id: id }, { session });
+      });
 
       return sendSuccess(res, 200, {
         message: "Project and all related data deleted",

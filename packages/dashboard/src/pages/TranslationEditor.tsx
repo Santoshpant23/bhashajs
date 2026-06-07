@@ -532,7 +532,13 @@ export default function TranslationEditor() {
       setHasUnsaved(false);
       fetchStats();
     } catch (e) {
-      console.error("Failed to save:", getErrorMessage(e));
+      // The PUT failed — the edit was NOT persisted. Keep the unsaved-changes
+      // guard active and surface the failure so the user doesn't believe a lost
+      // edit saved (silent data loss in a translation tool).
+      const msg = getErrorMessage(e);
+      console.error("Failed to save:", msg);
+      setHasUnsaved(true);
+      showToast(`Save failed — your edit was NOT saved: ${msg}`, "error");
     } finally {
       setTimeout(() => setSaving(null), 600);
     }
@@ -951,10 +957,32 @@ export default function TranslationEditor() {
   // contains options the server would accept — no more "select fr → 403".
   const editableLangs = (project?.supportedLanguages || []).filter(canEditLang);
 
+  // The project's source/baseline language — the language other translations are
+  // derived from (defaults to "en" if the project hasn't loaded yet). Importing
+  // this is the setup action, so we always allow it regardless of role
+  // assignment — a translator must be able to import the English baseline even
+  // if they aren't "assigned" to it.
+  const sourceLang = project?.defaultLanguage || "en";
+
+  // Import dropdown options — editable languages PLUS the source/baseline
+  // language (deduped), so the baseline is always importable.
+  const importLangOptions = Array.from(new Set([...editableLangs, sourceLang]));
+
   // ─── Import ──────────────────────────────────────────────────
 
+  function openImportModal() {
+    // Default to the source/baseline language when the current selection isn't a
+    // valid option (e.g. the user can't edit the previously-selected language).
+    if (!importLangOptions.includes(importLang)) {
+      setImportLang(sourceLang);
+    }
+    setShowImport(true);
+  }
+
   async function handleImport() {
-    if (!canEditLang(importLang)) {
+    // Allow the source/baseline language regardless of assignment — it's the
+    // setup action. Otherwise enforce the normal edit gate.
+    if (importLang !== sourceLang && !canEditLang(importLang)) {
       showToast(`You're not assigned to translate ${LANG_NAMES[importLang] || importLang}.`, "error");
       return;
     }
@@ -993,33 +1021,62 @@ export default function TranslationEditor() {
 
   // ─── Export ──────────────────────────────────────────────────
 
+  // Fetch the ENTIRE project (all pages) for export — the grid only holds one
+  // page, so exporting the `translations` state would silently produce a
+  // partial file presented as complete.
+  async function fetchAllForExport(): Promise<Translation[]> {
+    const all: Translation[] = [];
+    const limit = 200; // server caps page size at 200
+    let page = 1;
+    for (;;) {
+      const params = new URLSearchParams({ page: String(page), limit: String(limit) });
+      const res = await api.get(`/translations/${projectId}?${params}`);
+      const { data: items, pagination: pag } = res.data.data;
+      all.push(...items);
+      const total = pag?.total ?? all.length;
+      if (all.length >= total || !items.length) break;
+      page++;
+    }
+    return all;
+  }
+
   // Export all languages combined — uses the currently active register.
   // Filename includes the register so a multi-register export doesn't clobber
   // a default-register one with the same name.
-  function exportAll() {
+  async function exportAll() {
     if (!project) return;
-    const exportData: Record<string, Record<string, string>> = {};
-    for (const lang of project.supportedLanguages) {
-      exportData[lang] = {};
-      for (const t of translations) {
-        const v = valueAt(t, lang, currentRegister);
-        if (v) exportData[lang][t.key] = v;
+    try {
+      const rows = await fetchAllForExport();
+      const exportData: Record<string, Record<string, string>> = {};
+      for (const lang of project.supportedLanguages) {
+        exportData[lang] = {};
+        for (const t of rows) {
+          const v = valueAt(t, lang, currentRegister);
+          if (v) exportData[lang][t.key] = v;
+        }
       }
+      downloadJson(exportData, `${project.name}-${currentRegister}-all-translations.json`);
+    } catch (e) {
+      showToast(getErrorMessage(e), "error");
     }
-    downloadJson(exportData, `${project.name}-${currentRegister}-all-translations.json`);
     setShowExport(false);
   }
 
   // Export a single language as flat JSON (this is what i18n libraries expect),
   // at the currently active register.
-  function exportLang(lang: string) {
+  async function exportLang(lang: string) {
     if (!project) return;
-    const exportData: Record<string, string> = {};
-    for (const t of translations) {
-      const v = valueAt(t, lang, currentRegister);
-      if (v) exportData[t.key] = v;
+    try {
+      const rows = await fetchAllForExport();
+      const exportData: Record<string, string> = {};
+      for (const t of rows) {
+        const v = valueAt(t, lang, currentRegister);
+        if (v) exportData[t.key] = v;
+      }
+      downloadJson(exportData, `${project.name}-${lang}-${currentRegister}.json`);
+    } catch (e) {
+      showToast(getErrorMessage(e), "error");
     }
-    downloadJson(exportData, `${project.name}-${lang}-${currentRegister}.json`);
     setShowExport(false);
   }
 
@@ -1044,52 +1101,67 @@ export default function TranslationEditor() {
   }
 
   // Export as CSV (all languages) at the active register.
-  function exportCSV() {
+  async function exportCSV() {
     if (!project) return;
-    const langs = project.supportedLanguages;
-    const header = ["key", ...langs].map((h) => `"${h}"`).join(",");
-    const rows = translations.map((t) => {
-      const cols = [
-        `"${t.key.replace(/"/g, '""')}"`,
-        ...langs.map((lang) => {
-          const val = valueAt(t, lang, currentRegister).replace(/"/g, '""');
-          return `"${val}"`;
-        }),
-      ];
-      return cols.join(",");
-    });
-    downloadBlob([header, ...rows].join("\n"), `${project.name}-${currentRegister}-translations.csv`, "text/csv;charset=utf-8;");
+    try {
+      const allRows = await fetchAllForExport();
+      const langs = project.supportedLanguages;
+      const header = ["key", ...langs].map((h) => `"${h}"`).join(",");
+      const rows = allRows.map((t) => {
+        const cols = [
+          `"${t.key.replace(/"/g, '""')}"`,
+          ...langs.map((lang) => {
+            const val = valueAt(t, lang, currentRegister).replace(/"/g, '""');
+            return `"${val}"`;
+          }),
+        ];
+        return cols.join(",");
+      });
+      downloadBlob([header, ...rows].join("\n"), `${project.name}-${currentRegister}-translations.csv`, "text/csv;charset=utf-8;");
+    } catch (e) {
+      showToast(getErrorMessage(e), "error");
+    }
     setShowExport(false);
   }
 
   // Export as Android XML (per language) at the active register.
-  function exportAndroidXML(lang: string) {
+  async function exportAndroidXML(lang: string) {
     if (!project) return;
-    const lines = ['<?xml version="1.0" encoding="utf-8"?>', "<resources>"];
-    for (const t of translations) {
-      const val = valueAt(t, lang, currentRegister);
-      if (!val) continue;
-      const escaped = val.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/'/g, "\\'");
-      const resName = t.key.replace(/\./g, "_");
-      lines.push(`  <string name="${resName}">${escaped}</string>`);
+    try {
+      const rows = await fetchAllForExport();
+      const lines = ['<?xml version="1.0" encoding="utf-8"?>', "<resources>"];
+      for (const t of rows) {
+        const val = valueAt(t, lang, currentRegister);
+        if (!val) continue;
+        const escaped = val.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/'/g, "\\'");
+        const resName = t.key.replace(/\./g, "_");
+        lines.push(`  <string name="${resName}">${escaped}</string>`);
+      }
+      lines.push("</resources>");
+      downloadBlob(lines.join("\n"), `strings-${lang}-${currentRegister}.xml`, "application/xml");
+    } catch (e) {
+      showToast(getErrorMessage(e), "error");
     }
-    lines.push("</resources>");
-    downloadBlob(lines.join("\n"), `strings-${lang}-${currentRegister}.xml`, "application/xml");
     setShowExport(false);
   }
 
   // Export as iOS .strings (per language) at the active register.
-  function exportIOSStrings(lang: string) {
+  async function exportIOSStrings(lang: string) {
     if (!project) return;
-    const lines = [`/* ${project.name} — ${lang} (${currentRegister}) */`, ""];
-    for (const t of translations) {
-      const val = valueAt(t, lang, currentRegister);
-      if (!val) continue;
-      if (t.context) lines.push(`/* ${t.context} */`);
-      lines.push(`"${t.key}" = "${val.replace(/"/g, '\\"')}";`);
-      lines.push("");
+    try {
+      const rows = await fetchAllForExport();
+      const lines = [`/* ${project.name} — ${lang} (${currentRegister}) */`, ""];
+      for (const t of rows) {
+        const val = valueAt(t, lang, currentRegister);
+        if (!val) continue;
+        if (t.context) lines.push(`/* ${t.context} */`);
+        lines.push(`"${t.key}" = "${val.replace(/"/g, '\\"')}";`);
+        lines.push("");
+      }
+      downloadBlob(lines.join("\n"), `${lang}-${currentRegister}.strings`, "text/plain");
+    } catch (e) {
+      showToast(getErrorMessage(e), "error");
     }
-    downloadBlob(lines.join("\n"), `${lang}-${currentRegister}.strings`, "text/plain");
     setShowExport(false);
   }
 
@@ -1283,7 +1355,7 @@ export default function TranslationEditor() {
             Preview
           </button>
           {!isViewer && (
-            <button className="btn-ghost" onClick={() => setShowImport(true)}>
+            <button className="btn-ghost" onClick={openImportModal}>
               <Upload size={16} />
               Import
             </button>
@@ -1473,7 +1545,7 @@ export default function TranslationEditor() {
             <Search size={16} />
             <input
               type="text"
-              placeholder="Search keys or translations..."
+              placeholder="Search keys..."
               value={searchQuery}
               onChange={(e) => {
                 const val = e.target.value;
@@ -1758,7 +1830,7 @@ export default function TranslationEditor() {
               <div className="form-group">
                 <label>Language</label>
                 <select value={importLang} onChange={(e) => setImportLang(e.target.value)}>
-                  {editableLangs.map((lang) => (
+                  {importLangOptions.map((lang) => (
                     <option key={lang} value={lang}>{LANG_NAMES[lang] || lang}</option>
                   ))}
                 </select>

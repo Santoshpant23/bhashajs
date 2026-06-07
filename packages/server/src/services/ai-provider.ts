@@ -161,6 +161,60 @@ export function chunk<T>(arr: T[], size: number): T[][] {
   return out;
 }
 
+// How many Gemini calls to run at once. The batches were fully sequential, so a
+// large project paid the per-call latency N times in series; a small pool cuts
+// wall-clock without risking provider rate limits.
+const AI_BATCH_CONCURRENCY = 4;
+
+/** Run `fn` over `items` with at most `limit` in flight; preserves order. */
+export async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const idx = next++;
+      results[idx] = await fn(items[idx], idx);
+    }
+  };
+  const workers = Array.from({ length: Math.min(limit, items.length) }, worker);
+  await Promise.all(workers);
+  return results;
+}
+
+/** Every {placeholder} present in the source must survive in the output, or
+ *  interpolation breaks in the consuming app. Returns false if any is missing. */
+export function placeholdersPreserved(source: string, output: string): boolean {
+  const inPlaceholders = source.match(/\{[^}]+\}/g);
+  if (!inPlaceholders) return true;
+  return inPlaceholders.every((p) => output.includes(p));
+}
+
+/** Lightweight SSML well-formedness check (no XML dep): must be wrapped in a
+ *  <speak> element and have balanced tags. Rejects markup that would break a
+ *  TTS pipeline. */
+export function isWellFormedSSML(ssml: string): boolean {
+  if (typeof ssml !== "string") return false;
+  const trimmed = ssml.trim();
+  if (!/^<speak[\s>]/i.test(trimmed) || !/<\/speak>\s*$/i.test(trimmed)) return false;
+  const stack: string[] = [];
+  const tag = /<\s*(\/?)\s*([a-zA-Z][\w:-]*)[^>]*?(\/?)\s*>/g;
+  let m: RegExpExecArray | null;
+  while ((m = tag.exec(trimmed))) {
+    const [, closing, name, selfClose] = m;
+    if (selfClose) continue; // <break/> etc.
+    if (closing) {
+      if (stack.pop() !== name) return false;
+    } else {
+      stack.push(name);
+    }
+  }
+  return stack.length === 0;
+}
+
 /** Pull a JSON object out of a model response, tolerating code fences and
  *  surrounding prose. Returns {} on irrecoverable output rather than throwing. */
 export function extractJsonObject(raw: string): Record<string, any> {
@@ -250,7 +304,9 @@ class GeminiProvider implements AITranslationProvider {
     // Chunk so one large/odd response can't fail the whole job. Each batch is
     // independent: a batch that errors leaves its keys unfilled (reported as
     // "failed" by the route) without losing the batches that succeeded.
-    for (const batch of chunk(texts, AI_BATCH_SIZE)) {
+    const batches = chunk(texts, AI_BATCH_SIZE);
+
+    const processBatch = async (batch: TranslationInput[]): Promise<Array<[string, string]>> => {
       const prompt = this.buildTranslatePrompt(
         batch, targetLang, targetLangName, memory, glossary, register, vertical
       );
@@ -274,6 +330,7 @@ class GeminiProvider implements AITranslationProvider {
         }
       }
 
+      const accepted: Array<[string, string]> = [];
       for (const t of batch) {
         const val = parsed[t.key];
         if (typeof val !== "string" || !val.trim()) continue;
@@ -285,8 +342,25 @@ class GeminiProvider implements AITranslationProvider {
           );
           continue;
         }
-        output[t.key] = val;
+        // Placeholder guard: the model must preserve every {placeholder} from
+        // the source. A dropped/renamed placeholder breaks interpolation in the
+        // consuming app, so reject the key (the route reports it as "failed")
+        // rather than store a silently-broken translation.
+        if (!placeholdersPreserved(t.text, val)) {
+          console.warn(
+            `[BhashaJS AI] dropped output with missing placeholder for "${t.key}" in ${targetLang}`
+          );
+          continue;
+        }
+        accepted.push([t.key, val]);
       }
+      return accepted;
+    };
+
+    // Run batches with bounded concurrency (was fully sequential).
+    const batchResults = await mapWithConcurrency(batches, AI_BATCH_CONCURRENCY, processBatch);
+    for (const entries of batchResults) {
+      for (const [k, v] of entries) output[k] = v;
     }
 
     return output;
@@ -443,7 +517,13 @@ ${items}`;
         typeof cell.ipa === "string" &&
         typeof cell.ssml === "string"
       ) {
-        output[i.key] = { ipa: cell.ipa, ssml: cell.ssml };
+        // Validate SSML well-formedness — never store broken markup that would
+        // break a downstream TTS pipeline. Keep the IPA; blank an invalid SSML.
+        const ssml = isWellFormedSSML(cell.ssml) ? cell.ssml : "";
+        if (!ssml) {
+          console.warn(`[BhashaJS AI] dropped malformed SSML for "${i.key}" in ${lang}`);
+        }
+        output[i.key] = { ipa: cell.ipa, ssml };
       }
     }
     return output;

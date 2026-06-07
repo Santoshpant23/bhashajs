@@ -145,9 +145,13 @@ router.post(
               continue;
             }
             writeValue(existing, "translations", lang, coerceRegister(register), value);
-            // Mark provenance as "approved" — these are pre-vetted by the pack
-            // author, not raw AI output.
-            writeValue(existing, "sources", lang, coerceRegister(register), "approved");
+            // Non-regulated pack strings are pre-vetted by the pack author →
+            // "approved". But a REGULATED key legally requires the project's own
+            // compliance review: stamp it "pending" so the owner must approve it
+            // in-app before the SDK will serve it (the pack author is not the
+            // project's compliance authority).
+            const cellSource = existing.regulated ? "pending" : "approved";
+            writeValue(existing, "sources", lang, coerceRegister(register), cellSource);
             touched = true;
           }
         }
