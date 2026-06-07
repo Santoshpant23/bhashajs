@@ -1,7 +1,7 @@
 # Production stack for BhashaJS (the GCP VM, behind Caddy).
 #
-# SOURCE OF TRUTH for what runs in production — the local-dev `docker-compose.yml`
-# (bundled Mongo + nginx + certbot) had drifted far from this. Differences:
+# SOURCE OF TRUTH for what runs in production — distinct from the local-dev
+# `docker-compose.yml` (bundled Mongo + Caddy). Differences:
 #   - NO bundled Mongo: production uses MongoDB Atlas (MONGO_CONNECTION_URL in .env).
 #   - NO nginx/certbot: Caddy runs on the HOST and reverse-proxies api.bhashajs.com
 #     to 127.0.0.1:5000 (Caddy terminates TLS).

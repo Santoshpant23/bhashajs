@@ -177,6 +177,37 @@ describe("compliance audit trail", () => {
     });
   });
 
+  it("a regulated key is fully approved when its PRESENT cells are cleared, even if a supported language is absent (B2)", async () => {
+    // Guards the round-3 revert: 'fully approved' must NOT require every supported
+    // language — a key may legitimately target only some locales (or ship a
+    // formal-only pack cell). The earlier all-supported-languages rule would
+    // wrongly mark this incomplete forever.
+    const owner = await registerUser({ email: "owner-b2@example.com" });
+    const projRes = await request()
+      .post("/api/projects")
+      .set("Authorization", bearer(owner.token))
+      .send({ name: "PartialReg", supportedLanguages: ["en", "hi", "bn"] });
+    const projectId = projRes.body.data._id;
+
+    // Regulated key with ONLY an English cell (owner → "human" = cleared). hi/bn
+    // are supported but absent for this key.
+    await request()
+      .post(`/api/translations/${projectId}`)
+      .set("Authorization", bearer(owner.token))
+      .send({ key: "kyc.notice", translations: { en: "Notice." }, regulated: true, mandatedBy: "RBI X" });
+
+    const summary = await request()
+      .get(`/api/projects/${projectId}/compliance/summary`)
+      .set("Authorization", bearer(owner.token));
+    expect(summary.body.data).toEqual({ total: 1, fullyApproved: 1, withPending: 0 });
+
+    const audit = await request()
+      .get(`/api/projects/${projectId}/compliance/audit`)
+      .set("Authorization", bearer(owner.token));
+    const k = audit.body.data.keys.find((x: any) => x.key === "kyc.notice");
+    expect(k.fullyApproved).toBe(true);
+  });
+
   it("forbids a non-owner (translator) from the audit and summary (403)", async () => {
     const { translator, projectId } = await seed();
 

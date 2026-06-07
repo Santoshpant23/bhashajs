@@ -62,7 +62,7 @@ import DocLayout from "../../components/DocLayout.astro";
   </ul>
 
   <h2>Backups</h2>
-  <p>The MongoDB volume is mounted at <code>./mongo_data</code>. Back it up with <code>tar</code> or <code>mongodump</code>:</p>
+  <p>MongoDB data lives in the named Docker volume <code>mongo_data</code>. Dump it with <code>mongodump</code>:</p>
   <pre><code><span class="tok-fn">docker compose exec</span> mongo mongodump --archive=/data/db/backup.archive
 <span class="tok-fn">docker cp</span> bhashajs-mongo-1:/data/db/backup.archive ./backups/</code></pre>
 
