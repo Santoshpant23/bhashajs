@@ -123,6 +123,19 @@ interface Project {
   // Owners get an empty array here (they can edit everything by role).
   // We use this to disable cells the server would 403 on anyway.
   myAssignedLanguages?: string[];
+  // Monthly AI translation cap (keys/month). Surfaced read-only here.
+  aiMonthlyCap?: number;
+}
+
+// AI usage meter for the current "YYYY-MM" period, read from
+// GET /projects/:id/usage. Drives the "AI usage this month: X / cap" widget.
+interface AiUsage {
+  period: string;
+  cap: number;
+  keysTranslated: number;
+  voiceCalls: number;
+  aiCalls: number;
+  percentUsed: number;
 }
 
 interface GlossaryEntry {
@@ -288,6 +301,10 @@ export default function TranslationEditor() {
     fineTunableThreshold: number;
   } | null>(null);
 
+  // AI usage this month vs the project's monthly cap. Refreshed on load and
+  // after each AI translate so the meter reflects what was just spent.
+  const [aiUsage, setAiUsage] = useState<AiUsage | null>(null);
+
   // AI Translation modal
   const [showAIModal, setShowAIModal] = useState(false);
   const [aiTargetLang, setAITargetLang] = useState("");
@@ -375,6 +392,7 @@ export default function TranslationEditor() {
     fetchTranslations();
     fetchStats();
     fetchGlossary();
+    fetchUsage();
   }, [projectId]);
 
   // Warn user before leaving with unsaved changes
@@ -398,6 +416,18 @@ export default function TranslationEditor() {
       setProject(res.data.data);
     } catch (e) {
       console.error("Failed to fetch project:", getErrorMessage(e));
+    }
+  }
+
+  async function fetchUsage() {
+    try {
+      const res = await api.get(`/projects/${projectId}/usage`);
+      const data = res.data.data;
+      if (data && typeof data.keysTranslated === "number") {
+        setAiUsage(data);
+      }
+    } catch (e) {
+      // Older servers won't have this endpoint — the meter just won't render.
     }
   }
 
@@ -602,8 +632,11 @@ export default function TranslationEditor() {
       setAIResult(`${data.translated} ${currentRegister} translations generated for ${LANG_NAMES[aiTargetLang] || aiTargetLang}`);
       fetchTranslations();
       fetchStats();
+      fetchUsage();
     } catch (e) {
       showToast(getErrorMessage(e), "error");
+      // A 429 means the monthly cap was hit — refresh the meter so it shows full.
+      fetchUsage();
     } finally {
       setAITranslating(false);
     }
@@ -785,8 +818,10 @@ export default function TranslationEditor() {
       const data = res.data.data;
       showToast(`Voice data generated for ${data.generated} key(s) in ${LANG_NAMES[lang] || lang} (${currentRegister})`);
       await fetchTranslations();
+      fetchUsage();
     } catch (e) {
       showToast(getErrorMessage(e), "error");
+      fetchUsage();
     } finally {
       setGeneratingVoice(false);
     }
@@ -852,6 +887,7 @@ export default function TranslationEditor() {
       // Refresh data
       await fetchTranslations();
       await fetchStats();
+      fetchUsage();
 
       // Enter review queue mode
       setStatusFilter("ai-pending");
@@ -860,6 +896,8 @@ export default function TranslationEditor() {
     } catch (e) {
       showToast(getErrorMessage(e), "error");
       setBatchProgress("");
+      // 429 (cap hit) — refresh the meter so it reflects the spend.
+      fetchUsage();
     } finally {
       setBatchTranslating(false);
     }
@@ -1450,6 +1488,35 @@ export default function TranslationEditor() {
                 </span>
               </div>
             )}
+            {/* AI usage this month vs the project's monthly cap. The bar turns
+                amber as it nears the cap and red at/over it so the cost ceiling
+                is visible right where AI translate is triggered. */}
+            {aiUsage && aiUsage.cap > 0 && (
+              <div
+                className="stat-item ai-usage"
+                title={`AI usage this month (${aiUsage.period}): ${aiUsage.keysTranslated.toLocaleString()} of ${aiUsage.cap.toLocaleString()} keys. Translate/voice are blocked once the cap is reached; it resets next month.`}
+                style={{ marginLeft: tmCoverage && tmCoverage.total > 0 ? undefined : "auto" }}
+              >
+                <span className="stat-lang">AI</span>
+                <div className="stat-progress">
+                  <div
+                    className="stat-progress-fill"
+                    style={{
+                      width: `${aiUsage.percentUsed}%`,
+                      background:
+                        aiUsage.percentUsed >= 100
+                          ? "#ef4444"
+                          : aiUsage.percentUsed >= 80
+                          ? "#f59e0b"
+                          : undefined,
+                    }}
+                  />
+                </div>
+                <span className="stat-pct">
+                  {aiUsage.keysTranslated.toLocaleString()} / {aiUsage.cap.toLocaleString()}
+                </span>
+              </div>
+            )}
           </div>
         )}
 
@@ -1795,6 +1862,20 @@ export default function TranslationEditor() {
                     — {REGISTER_HINTS[currentRegister].toLowerCase()}.
                     Switch the register tab on the editor to target a different one.
                   </span>
+                </div>
+              )}
+              {aiUsage && aiUsage.cap > 0 && (
+                <div
+                  className="form-hint"
+                  style={{
+                    color: aiUsage.percentUsed >= 100 ? "#ef4444" : undefined,
+                  }}
+                >
+                  AI usage this month: {aiUsage.keysTranslated.toLocaleString()} /{" "}
+                  {aiUsage.cap.toLocaleString()} keys
+                  {aiUsage.percentUsed >= 100
+                    ? " — monthly cap reached, resets next month."
+                    : "."}
                 </div>
               )}
               {aiResult && <div className="ai-result">{aiResult}</div>}

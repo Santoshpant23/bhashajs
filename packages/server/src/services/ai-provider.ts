@@ -55,7 +55,8 @@ export interface AITranslationProvider {
     memory?: MemoryExample[],
     glossary?: GlossaryTerm[],
     register?: Register,
-    vertical?: string | null
+    vertical?: string | null,
+    signal?: AbortSignal
   ): Promise<Record<string, string>>;
 
   /**
@@ -69,7 +70,8 @@ export interface AITranslationProvider {
     inputs: VoiceInput[],
     lang: string,
     langName: string,
-    register?: Register
+    register?: Register,
+    signal?: AbortSignal
   ): Promise<Record<string, VoiceOutput>>;
 }
 
@@ -141,8 +143,12 @@ but treat English loanwords as first-class citizens.`,
 // Max keys per Gemini call — large projects are chunked so one oversized
 // response can't truncate and fail everything.
 const AI_BATCH_SIZE = 40;
-// Per-call wall-clock budget (this SDK version has no AbortController, so we
-// race the call against a timeout to avoid hanging the HTTP request).
+// Per-call wall-clock budget. We still race each call against this timeout so a
+// hung provider can't pin the HTTP request open. Separately, @google/genai
+// v2.7 DOES accept an AbortSignal (config.abortSignal), so when the route
+// passes one (client disconnect), the in-flight fetch is actually cancelled —
+// not merely abandoned. The timeout race and the abort signal are
+// complementary: the race bounds latency, the signal frees the upstream call.
 const AI_CALL_TIMEOUT_MS = 60_000;
 
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
@@ -277,12 +283,17 @@ class GeminiProvider implements AITranslationProvider {
   }
 
   /** One generate call. The translate/voice prompts all expect a JSON object,
-   *  so we ask the model for JSON and hand the raw text to extractJsonObject. */
-  private async generate(prompt: string): Promise<string> {
+   *  so we ask the model for JSON and hand the raw text to extractJsonObject.
+   *
+   *  `signal` (when provided by the route) is wired into the SDK's
+   *  config.abortSignal so a client disconnect actually cancels the in-flight
+   *  request. Verified against @google/genai v2.7.0: GenerateContentConfig
+   *  declares `abortSignal?: AbortSignal`. */
+  private async generate(prompt: string, signal?: AbortSignal): Promise<string> {
     const resp = await this.ai.models.generateContent({
       model: this.model,
       contents: prompt,
-      config: { responseMimeType: "application/json" },
+      config: { responseMimeType: "application/json", abortSignal: signal },
     });
     return resp.text || "";
   }
@@ -294,7 +305,8 @@ class GeminiProvider implements AITranslationProvider {
     memory?: MemoryExample[],
     glossary?: GlossaryTerm[],
     register: Register = "default",
-    vertical?: string | null
+    vertical?: string | null,
+    signal?: AbortSignal
   ): Promise<Record<string, string>> {
     if (texts.length === 0) return {};
 
@@ -316,7 +328,7 @@ class GeminiProvider implements AITranslationProvider {
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
           const text = await withTimeout(
-            this.generate(prompt),
+            this.generate(prompt, signal),
             AI_CALL_TIMEOUT_MS,
             "Gemini translate"
           );
@@ -448,7 +460,8 @@ Return JSON in this exact format:
     inputs: VoiceInput[],
     lang: string,
     langName: string,
-    register: Register = "default"
+    register: Register = "default",
+    signal?: AbortSignal
   ): Promise<Record<string, VoiceOutput>> {
     if (inputs.length === 0) return {};
 
@@ -494,7 +507,7 @@ ${items}`;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const text = await withTimeout(
-          this.generate(prompt),
+          this.generate(prompt, signal),
           AI_CALL_TIMEOUT_MS,
           "Gemini voice"
         );

@@ -46,6 +46,7 @@ import {
 import { isValidRegister, REGISTERS } from "../models/Translation";
 import { resolveWriteSource } from "../utils/compliance";
 import { withTransactionOrFallback } from "../utils/transaction";
+import { wouldExceedCap, recordUsage, getUsage } from "../utils/usage";
 
 // Escape user input destined for a Mongo $regex so it's matched as a literal
 // substring. Without this, a crafted pattern like "(a+)+$" forces catastrophic
@@ -768,6 +769,33 @@ router.post(
         });
       }
 
+      // ─── Monthly AI cap (BEFORE any AI call) ──────────────────────────────
+      // Enforce the per-project credit cap against this month's keysTranslated
+      // so a single project can't run up the model bill. This check must run
+      // before getAIProvider().translate() — the test suite relies on a 429
+      // coming back with NO AI call made. We count the candidate set; the
+      // actual recorded usage below is the (possibly smaller) #keys written.
+      const cap = (project as any).aiMonthlyCap as number;
+      if (await wouldExceedCap(projectId as string, cap, toTranslate.length)) {
+        const { keysTranslated } = await getUsage(projectId as string);
+        return sendError(
+          res,
+          429,
+          `Monthly AI translation cap reached (${keysTranslated}/${cap}). Resets next month.`
+        );
+      }
+
+      // Cancel in-flight AI work if the client disconnects. @google/genai v2.7
+      // honors config.abortSignal, so this aborts the upstream fetch rather
+      // than abandoning it. We mark `aborted` to skip the DB writes below.
+      const controller = new AbortController();
+      let aborted = false;
+      const onClose = () => {
+        aborted = true;
+        controller.abort();
+      };
+      req.on("close", onClose);
+
       const langNames: Record<string, string> = {
         hi: "Hindi", bn: "Bengali", ur: "Urdu", ta: "Tamil", te: "Telugu",
         mr: "Marathi", ne: "Nepali", pa: "Punjabi (Gurmukhi)", "pa-PK": "Punjabi (Shahmukhi)",
@@ -820,8 +848,16 @@ router.post(
         memory,
         glossary,
         targetRegister,
-        (project as any).vertical || null
+        (project as any).vertical || null,
+        controller.signal
       );
+
+      // Client went away mid-flight — stop here without persisting (the abort
+      // signal already cancelled the upstream call) and don't meter aborted work.
+      if (aborted) {
+        req.off("close", onClose);
+        return; // connection is already closed; nothing to send
+      }
 
       const translatedKeys: string[] = [];
 
@@ -868,6 +904,11 @@ router.post(
       const failedKeys = toTranslate
         .filter((t) => !aiResults[t.key])
         .map((t) => t.key);
+
+      // Meter the usage. Only the keys actually WRITTEN count toward the cap
+      // (failedKeys are not double-counted). `calls: 1` tracks the AI request.
+      req.off("close", onClose);
+      await recordUsage(projectId as string, { keys: translatedKeys.length, calls: 1 });
 
       return sendSuccess(res, 200, {
         message:
@@ -1168,6 +1209,28 @@ router.post(
         });
       }
 
+      // ─── Monthly AI cap (BEFORE any AI call) ──────────────────────────────
+      // Voice generation hits the same model bill, so it's capped on the same
+      // monthly keysTranslated budget. Count the voice candidate set.
+      const voiceCap = (project as any).aiMonthlyCap as number;
+      if (await wouldExceedCap(projectId as string, voiceCap, candidates.length)) {
+        const { keysTranslated } = await getUsage(projectId as string);
+        return sendError(
+          res,
+          429,
+          `Monthly AI translation cap reached (${keysTranslated}/${voiceCap}). Resets next month.`
+        );
+      }
+
+      // Cancel in-flight AI work on client disconnect (see /ai-translate).
+      const controller = new AbortController();
+      let aborted = false;
+      const onClose = () => {
+        aborted = true;
+        controller.abort();
+      };
+      req.on("close", onClose);
+
       const langNames: Record<string, string> = {
         hi: "Hindi", bn: "Bengali", ur: "Urdu", ta: "Tamil", te: "Telugu",
         mr: "Marathi", ne: "Nepali", pa: "Punjabi (Gurmukhi)", "pa-PK": "Punjabi (Shahmukhi)",
@@ -1184,7 +1247,20 @@ router.post(
 
       const aiProvider = getAIProvider();
       const langName = langNames[lang] || lang;
-      const aiResults = await aiProvider.generateVoice(inputs, lang, langName, register);
+      const aiResults = await aiProvider.generateVoice(
+        inputs,
+        lang,
+        langName,
+        register,
+        controller.signal
+      );
+
+      // Client disconnected mid-flight — abort already cancelled the upstream
+      // call; skip persistence and don't meter aborted work.
+      if (aborted) {
+        req.off("close", onClose);
+        return;
+      }
 
       const generatedKeys: string[] = [];
       for (const t of candidates) {
@@ -1201,6 +1277,10 @@ router.post(
         await t.save();
         generatedKeys.push(t.key);
       }
+
+      // Meter voice usage — only the cells actually generated count.
+      req.off("close", onClose);
+      await recordUsage(projectId as string, { voice: generatedKeys.length, calls: 1 });
 
       return sendSuccess(res, 200, {
         message: `Generated voice data for ${generatedKeys.length} key(s) in ${langName} (${register})`,

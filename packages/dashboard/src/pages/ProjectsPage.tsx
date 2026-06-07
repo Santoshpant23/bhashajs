@@ -36,8 +36,19 @@ interface Project {
   supportedLanguages: string[];
   apiKey?: string;
   vertical?: string | null;
+  aiMonthlyCap?: number;
   createdAt: string;
   myRole?: string; // "owner" | "translator" | "viewer"
+}
+
+// Current-period AI usage for the project open in Settings.
+interface AiUsage {
+  period: string;
+  cap: number;
+  keysTranslated: number;
+  voiceCalls: number;
+  aiCalls: number;
+  percentUsed: number;
 }
 
 // Vertical options shown in project settings. The values match the keys in
@@ -117,6 +128,8 @@ export default function ProjectsPage() {
   const [editName, setEditName] = useState("");
   const [editLangs, setEditLangs] = useState<string[]>([]);
   const [editVertical, setEditVertical] = useState<string>("");
+  // AI usage for the project open in Settings (read-only meter).
+  const [settingsUsage, setSettingsUsage] = useState<AiUsage | null>(null);
 
   // Team management state
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
@@ -207,8 +220,20 @@ export default function ProjectsPage() {
     setNewKeyName("");
     setNewKeyOrigins("");
     setNewKeyReadOnly(true);
+    setSettingsUsage(null);
     fetchTeam(project._id);
     fetchScopedKeys(project._id);
+    fetchSettingsUsage(project._id);
+  }
+
+  async function fetchSettingsUsage(id: string) {
+    try {
+      const res = await api.get(`/projects/${id}/usage`);
+      const data = res.data.data;
+      if (data && typeof data.keysTranslated === "number") setSettingsUsage(data);
+    } catch (e) {
+      // Older servers won't have this endpoint — the meter just won't render.
+    }
   }
 
   async function saveSettings() {
@@ -535,6 +560,34 @@ export default function ProjectsPage() {
                         "Tagging your project gives the AI translator domain-specific guidance and unlocks the matching vertical packs."}
                     </span>
                   </div>
+                  {/* AI usage this month vs the monthly cap (read-only). AI
+                      translate/voice are blocked with a 429 once the cap is hit. */}
+                  {settingsUsage && settingsUsage.cap > 0 && (
+                    <div className="form-group">
+                      <label>AI usage this month ({settingsUsage.period})</label>
+                      <div className="stat-progress" style={{ height: 8 }}>
+                        <div
+                          className="stat-progress-fill"
+                          style={{
+                            width: `${settingsUsage.percentUsed}%`,
+                            background:
+                              settingsUsage.percentUsed >= 100
+                                ? "#ef4444"
+                                : settingsUsage.percentUsed >= 80
+                                ? "#f59e0b"
+                                : undefined,
+                          }}
+                        />
+                      </div>
+                      <span className="form-hint">
+                        {settingsUsage.keysTranslated.toLocaleString()} /{" "}
+                        {settingsUsage.cap.toLocaleString()} keys translated.
+                        {settingsUsage.percentUsed >= 100
+                          ? " Monthly cap reached — resets next month."
+                          : " AI translate is blocked once the cap is reached."}
+                      </span>
+                    </div>
+                  )}
                   <div className="modal-actions">
                     <button className="btn-ghost" onClick={() => setShowSettings(false)}>Cancel</button>
                     <button className="btn-primary" onClick={saveSettings}>Save Changes</button>

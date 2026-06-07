@@ -27,6 +27,7 @@ import Notification from "../models/Notification";
 import User from "../models/User";
 import { sendSuccess, sendError } from "../utils/response";
 import { withTransactionOrFallback } from "../utils/transaction";
+import { getUsage, currentPeriod } from "../utils/usage";
 import {
   validateRequired,
   validateObjectId,
@@ -139,6 +140,42 @@ router.get(
       return sendSuccess(res, 200, obj);
     } catch (e) {
       return sendError(res, 500, "Failed to fetch project");
+    }
+  }
+);
+
+// ─── GET AI USAGE FOR THE CURRENT PERIOD ─────────────────────
+// Any member can read this — it's how the dashboard shows "AI usage this
+// month: X / cap". Returns the live counters for the current "YYYY-MM" bucket
+// plus the project's monthly cap so the UI can render a progress bar.
+router.get(
+  "/:projectId/usage",
+  requireProjectRole("owner", "translator", "viewer"),
+  async (req: ProjectAuthRequest, res: Response) => {
+    try {
+      const { projectId } = req.params;
+
+      const idError = validateObjectId(projectId as string, "Project ID");
+      if (idError) return sendError(res, 400, idError);
+
+      const project = await Project.findById(projectId);
+      if (!project) return sendError(res, 404, "Project not found");
+
+      const usage = await getUsage(projectId as string);
+      const cap = (project as any).aiMonthlyCap as number;
+
+      return sendSuccess(res, 200, {
+        period: currentPeriod(),
+        cap,
+        keysTranslated: usage.keysTranslated,
+        voiceCalls: usage.voiceCalls,
+        aiCalls: usage.aiCalls,
+        // Convenience for the UI — clamped 0..100.
+        percentUsed:
+          cap > 0 ? Math.min(100, Math.round((usage.keysTranslated / cap) * 100)) : 0,
+      });
+    } catch (e) {
+      return sendError(res, 500, "Failed to fetch AI usage");
     }
   }
 );
