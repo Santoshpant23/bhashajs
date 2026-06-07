@@ -71,7 +71,8 @@ async function recordHistory(
   newValue: string,
   source: string,
   changedBy: string,
-  session?: any
+  session?: any,
+  isRegulated?: boolean
 ) {
   // Skip no-op edits — EXCEPT approval/rejection events, which are provenance
   // changes worth recording in the audit trail even when the text is unchanged
@@ -95,11 +96,17 @@ async function recordHistory(
     );
   } catch (e) {
     console.error("[BhashaJS] Failed to record history:", e);
-    // Inside a transaction the audit event MUST be atomic with the write:
-    // propagate so the whole change rolls back rather than leaving a regulated
-    // edit live with no audit trail. Outside a transaction (no session) history
-    // stays best-effort and never fails the request.
-    if (session) throw e;
+    // The audit event MUST NOT be silently dropped when it is load-bearing:
+    //   - Inside a transaction (session present): propagate so the whole change
+    //     rolls back together — no missing or phantom audit row.
+    //   - On a REGULATED key: propagate EVEN without a session. A misconfigured
+    //     standalone deployment (where withTransactionOrFallback ran the
+    //     fallback path with no session) must FAIL the request rather than leave
+    //     a regulated edit live with no audit trail — the compliance guarantee
+    //     ("guaranteed audit trail") has to literally hold even there.
+    // Non-regulated history outside a transaction stays best-effort and never
+    // fails the request.
+    if (session || isRegulated) throw e;
   }
 }
 
@@ -666,14 +673,16 @@ router.put("/:id", async (req: AuthRequest, res: Response) => {
     // Persist the translation and its audit event ATOMICALLY. On a replica set /
     // Atlas they commit together (no missing or phantom audit event); on a
     // standalone Mongo the fallback saves then records in order, and a regulated
-    // history failure propagates (it isn't silently swallowed).
+    // history failure propagates (it isn't silently swallowed) via the
+    // isRegulated flag below.
+    const keyIsRegulated = (translation as any).regulated === true;
     await withTransactionOrFallback(async (session) => {
       await translation.save({ session });
       if (didEditCell) {
         await recordHistory(
           translation._id, translation.projectId, editedLang, editedRegister,
           translation.key, historyOldValue, newValue as string, historyWriteSource, req.userId!,
-          session
+          session, keyIsRegulated
         );
       }
     });
@@ -1035,41 +1044,17 @@ router.post("/:id/review", async (req: AuthRequest, res: Response) => {
       return sendError(res, 400, `No translation exists for "${lang}" at register "${register}"`);
     }
 
+    const keyIsRegulated = (translation as any).regulated === true;
+
+    // Mutate the in-memory document for the chosen action. The audit-history
+    // write is DEFERRED until after the save below so the two are atomic — no
+    // pre-save history event (which would be a PHANTOM approval if the save then
+    // failed) and no out-of-transaction approval audit (which could leave an
+    // approved-but-unaudited, servable cell).
     if (action === "approve") {
       writeValue(translation, "sources", lang, register, "approved");
-
-      // Record history
-      await recordHistory(
-        translation._id, translation.projectId, lang, register, translation.key,
-        translatedValue, translatedValue, "approved", req.userId!
-      );
-
-      // Memory is stratified by register so an approved "casual" pair
-      // doesn't leak into "formal" suggestions.
-      // Source language is the project's default (not hardcoded "en"), so
-      // non-English-source projects build a corpus too.
-      const proj = await Project.findById(translation.projectId);
-      const sourceLang = proj?.defaultLanguage || "en";
-      const sourceText = readValue(translation.translations as any, sourceLang, DEFAULT_REGISTER);
-      if (sourceText && lang !== sourceLang) {
-        await TranslationMemory.findOneAndUpdate(
-          { projectId: translation.projectId, lang, register, sourceText },
-          {
-            translatedText: translatedValue,
-            key: translation.key,
-            context: translation.context || undefined,
-            createdAt: new Date(),
-          },
-          { upsert: true, new: true }
-        );
-      }
     } else {
-      // Reject: record history then remove only this (lang, register) cell
-      await recordHistory(
-        translation._id, translation.projectId, lang, register, translation.key,
-        translatedValue, "", "rejected", req.userId!
-      );
-      // Surgical delete from the nested map
+      // Reject: remove only this (lang, register) cell.
       const trMap = translation.translations as any;
       const srMap = translation.sources as any;
       if (trMap instanceof Map) {
@@ -1085,7 +1070,53 @@ router.post("/:id/review", async (req: AuthRequest, res: Response) => {
     }
 
     translation.updatedAt = new Date();
-    await translation.save();
+
+    // Persist the source/cell change and its audit event ATOMICALLY — mirrors
+    // the PUT path. On a replica set / Atlas they commit together; on a
+    // standalone Mongo the fallback saves then records in order, and because the
+    // review action is itself the regulated approval/rejection, a history
+    // failure propagates (isRegulated flag) rather than leaving an approved cell
+    // with no audit trail.
+    const historyOld = translatedValue;
+    const historyNew = action === "approve" ? translatedValue : "";
+    const historySource = action === "approve" ? "approved" : "rejected";
+    await withTransactionOrFallback(async (session) => {
+      await translation.save({ session });
+      await recordHistory(
+        translation._id, translation.projectId, lang, register, translation.key,
+        historyOld, historyNew, historySource, req.userId!,
+        session, keyIsRegulated
+      );
+    });
+
+    // Translation-memory flywheel: an approved pair feeds the corpus. This is a
+    // SEPARATE-document write kept OUTSIDE the audit transaction and best-effort
+    // (like the PUT path's TM capture) — a TM hiccup must never roll back or fail
+    // a successful approval. Memory is stratified by register so an approved
+    // "casual" pair doesn't leak into "formal" suggestions; source language is
+    // the project's default (not hardcoded "en") so non-English-source projects
+    // build a corpus too.
+    if (action === "approve") {
+      try {
+        const proj = await Project.findById(translation.projectId);
+        const sourceLang = proj?.defaultLanguage || "en";
+        const sourceText = readValue(translation.translations as any, sourceLang, DEFAULT_REGISTER);
+        if (sourceText && lang !== sourceLang) {
+          await TranslationMemory.findOneAndUpdate(
+            { projectId: translation.projectId, lang, register, sourceText },
+            {
+              translatedText: translatedValue,
+              key: translation.key,
+              context: translation.context || undefined,
+              createdAt: new Date(),
+            },
+            { upsert: true, new: true }
+          );
+        }
+      } catch (_) {
+        /* non-critical — approval already committed */
+      }
+    }
 
     return sendSuccess(res, 200, {
       message: `Translation ${action === "approve" ? "approved" : "rejected"} for ${lang} (${register})`,

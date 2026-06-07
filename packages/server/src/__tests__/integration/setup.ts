@@ -1,15 +1,25 @@
 /**
  * Shared integration-test harness.
  *
- * Boots an in-memory MongoDB (mongodb-memory-server, standalone is fine —
- * the cascade-delete uses withTransactionOrFallback, which detects the lack
- * of replica-set transactions and falls back to ordered non-session writes),
- * connects mongoose, and builds the Express app via createApp() WITHOUT the
- * real server's listen()/process.exit guards.
+ * Boots an in-memory MongoDB as a single-node REPLICA SET
+ * (mongodb-memory-server's MongoMemoryReplSet), connects mongoose, and builds
+ * the Express app via createApp() WITHOUT the real server's
+ * listen()/process.exit guards.
+ *
+ * Why a replica set (not a standalone MongoMemoryServer)? Multi-document
+ * transactions require a replica set; a standalone mongod cannot run them. The
+ * production self-host stack now ships a 1-node RS (see docker-compose.yml), and
+ * Atlas is always a replica set — so the tests must exercise the SAME real
+ * transaction path the route's withTransactionOrFallback takes in prod, not the
+ * standalone fallback. This is what makes the atomicity guarantee (the
+ * translation write and its audit-history write commit or roll back together)
+ * actually under test. The cascade-delete tests pass identically here —
+ * transactions just commit instead of falling back to ordered non-session
+ * writes.
  *
  * Each test file calls `useIntegrationServer()` at the top of its top-level
  * describe. That registers beforeAll/afterAll/afterEach hooks:
- *   - beforeAll: set env, boot mongo, connect, build app
+ *   - beforeAll: set env, boot mongo RS, connect, build app
  *   - afterEach: drop every collection so tests are independent
  *   - afterAll: disconnect + stop mongo
  *
@@ -20,12 +30,12 @@
 
 import { beforeAll, afterAll, afterEach } from "vitest";
 import mongoose from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { MongoMemoryReplSet } from "mongodb-memory-server";
 import supertest from "supertest";
 import type { Express } from "express";
 import { createApp } from "../../index";
 
-let mongo: MongoMemoryServer | null = null;
+let mongo: MongoMemoryReplSet | null = null;
 let app: Express | null = null;
 
 /** The live Express app — only valid after beforeAll has run. */
@@ -52,7 +62,10 @@ export function useIntegrationServer() {
     // Short expiry is fine; default is 7d. Keep it explicit for determinism.
     process.env.JWT_EXPIRY = "1h";
 
-    mongo = await MongoMemoryServer.create();
+    // 1-node replica set so multi-document transactions actually run (matches
+    // prod: self-host RS + Atlas). `replSet.count: 1` keeps boot fast while
+    // still giving mongod the oplog/replication machinery transactions need.
+    mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
     await mongoose.connect(mongo.getUri());
     app = createApp();
   }, 120_000); // memory-server first-run can download/extract the binary — allow plenty of time.

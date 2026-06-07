@@ -324,10 +324,19 @@ export default function TranslationEditor() {
     lang === "en" ? "default" : "default"
   );
 
-  // The register-aware dirty key for a cell. English always lives in "default"
-  // (see effectiveRegister), so the same physical cell maps to one stable key.
-  const dirtyKey = useCallback(
-    (id: string, lang: string) => `${id}:${lang}:${effectiveRegisterRef.current(lang)}`,
+  // The register-aware dirty key for a cell — `${id}:${lang}:${register}`. EVERY
+  // per-cell map (this dirty set, `originalValueRef`, `inFlightSavesRef`) keys on
+  // this exact shape so they stay consistent: a (lang, register) pair is one
+  // cell, and switching registers never aliases two different cells onto one key.
+  //
+  // The `register` is OPTIONAL: synchronous callers (typing, Escape) omit it and
+  // we resolve the cell's CURRENT register from `effectiveRegisterRef`. But the
+  // async save-completion handler MUST pass the register it actually saved —
+  // reading the current register there is the cross-register race (the user may
+  // have switched registers mid-flight), so we thread the saved register in.
+  const cellKey = useCallback(
+    (id: string, lang: string, register?: Register) =>
+      `${id}:${lang}:${register ?? effectiveRegisterRef.current(lang)}`,
     []
   );
   // Sync the derived `hasUnsaved` flag from the dirty set's size. Called after
@@ -337,18 +346,18 @@ export default function TranslationEditor() {
     setHasUnsaved(dirtyCellsRef.current.size > 0);
   }, []);
   const markCellDirty = useCallback(
-    (id: string, lang: string) => {
-      dirtyCellsRef.current.add(dirtyKey(id, lang));
+    (id: string, lang: string, register?: Register) => {
+      dirtyCellsRef.current.add(cellKey(id, lang, register));
       syncHasUnsaved();
     },
-    [dirtyKey, syncHasUnsaved]
+    [cellKey, syncHasUnsaved]
   );
   const markCellClean = useCallback(
-    (id: string, lang: string) => {
-      dirtyCellsRef.current.delete(dirtyKey(id, lang));
+    (id: string, lang: string, register?: Register) => {
+      dirtyCellsRef.current.delete(cellKey(id, lang, register));
       syncHasUnsaved();
     },
-    [dirtyKey, syncHasUnsaved]
+    [cellKey, syncHasUnsaved]
   );
 
   // Add key modal
@@ -433,17 +442,23 @@ export default function TranslationEditor() {
   }
 
   // Keyboard shortcuts
+  // Per-cell optimistic baseline, keyed by `${id}:${lang}:${register}` (the same
+  // register-qualified shape as the dirty set and the in-flight guard) so a
+  // formal-register baseline never overwrites the default-register one for the
+  // same (id, lang). The change-guard reads it to decide whether a save is a
+  // real edit or a no-op.
   const originalValueRef = useRef<Record<string, string>>({});
-  // Set to a cell's "id:lang" key when Escape cancels its edit. The cell then
-  // blurs synchronously and fires onBlur → saveTranslation BEFORE React has
-  // committed the revert, so the save's change-guard would still see the
-  // edited value and persist the cancelled copy. The blur handler checks and
+  // Set to a cell's `${id}:${lang}:${register}` key when Escape cancels its edit.
+  // The cell then blurs synchronously and fires onBlur → saveTranslation BEFORE
+  // React has committed the revert, so the save's change-guard would still see
+  // the edited value and persist the cancelled copy. The blur handler checks and
   // clears this flag to skip exactly one save after an Escape-cancel.
   const skipNextBlurSaveRef = useRef<string | null>(null);
-  // Per-cell "save in flight" guard. Holds the "id:lang" keys with a PUT
-  // currently pending. A second save for the SAME cell (e.g. Ctrl+S then the
-  // blur it triggers, which fires before the PUT resolves) is dropped so the
-  // same edit isn't persisted twice. Cleared in the save's finally block.
+  // Per-cell "save in flight" guard. Holds the `${id}:${lang}:${register}` keys
+  // with a PUT currently pending. A second save for the SAME cell (e.g. Ctrl+S
+  // then the blur it triggers, which fires before the PUT resolves) is dropped so
+  // the same edit isn't persisted twice. Register-qualified so an in-flight save
+  // in one register never blocks an edit in another. Cleared in the finally block.
   const inFlightSavesRef = useRef<Set<string>>(new Set());
   const [cellFocused, setCellFocused] = useState(false);
 
@@ -646,17 +661,35 @@ export default function TranslationEditor() {
   // server only touches the (editedLang, editedRegister) cell, so we send just
   // that pair. Caller passes the actual edited language — we derive its
   // effective register here so English always saves to "default".
-  async function saveTranslation(translation: Translation, editedLang?: string) {
-    const editedRegister = editedLang ? effectiveRegister(editedLang) : currentRegister;
+  async function saveTranslation(
+    translation: Translation,
+    editedLang?: string,
+    // The register to persist. Normal callers (blur, Ctrl+S) omit it and we
+    // derive the cell's CURRENT register. The autosave-on-completion re-invoke
+    // passes the register it originally saved so a mid-flight register switch
+    // can't redirect the re-save to the wrong register.
+    savedRegister?: Register
+  ) {
+    // The register being persisted by THIS call. Captured ONCE here and threaded
+    // through the entire save lifecycle (baseline key, in-flight guard, dirty-set
+    // key, provenance write, autosave-on-completion). The async completion handler
+    // below must NEVER re-read the currently-selected register — the user can
+    // switch registers while this PUT is in flight, which would otherwise clear or
+    // block the WRONG register's cell (the cross-register save race).
+    const editedRegister: Register = savedRegister
+      ? savedRegister
+      : editedLang
+      ? effectiveRegister(editedLang)
+      : currentRegister;
 
     // ─── Change-guard (covers EVERY caller: blur, Ctrl+S, and any future one) ──
     // A PUT stamps the edited cell's provenance — for a regulated key that can
     // flip an unreviewed AI/pending cell to a servable state. So a save must
     // only fire when the value ACTUALLY changed versus what was last loaded or
-    // persisted. `originalValueRef` is the per-(id, lang) baseline captured on
-    // focus (blur path) and refreshed across each save below; the Ctrl+S path
-    // reuses that same baseline, so an unchanged AI cell is never promoted to
-    // "human" just because the owner pressed Ctrl+S over it.
+    // persisted. `originalValueRef` is the per-(id, lang, register) baseline
+    // captured on focus (blur path) and refreshed across each save below; the
+    // Ctrl+S path reuses that same baseline, so an unchanged AI cell is never
+    // promoted to "human" just because the owner pressed Ctrl+S over it.
     //
     // `savedValue` is the exact value this save is persisting for the edited
     // cell. Captured up front so the success handler can tell whether a NEWER
@@ -665,7 +698,11 @@ export default function TranslationEditor() {
     const savedValue = editedLang
       ? valueAt(translation, editedLang, editedRegister)
       : undefined;
-    const refKey = editedLang ? `${translation._id}:${editedLang}` : null;
+    // Register-qualified so the baseline/in-flight guard for (id, lang, formal)
+    // never collides with (id, lang, default) — same shape as the dirty set.
+    const refKey = editedLang
+      ? `${translation._id}:${editedLang}:${editedRegister}`
+      : null;
     // Prior baseline for `refKey`, captured before the optimistic overwrite so a
     // failed PUT can restore it (see catch).
     let refKeyHadBaseline = false;
@@ -773,10 +810,12 @@ export default function TranslationEditor() {
       }
       // Only mark THIS cell clean when no newer edit landed mid-flight. A late
       // response must never clear another (or this) cell's unsaved state for
-      // content the user has since changed. Per-cell, so saving cell A never
-      // touches cell B's dirty key.
+      // content the user has since changed. Per-cell AND per-register: pass the
+      // register we ACTUALLY saved (`editedRegister`), NOT the currently-selected
+      // one — if the user switched registers while this PUT was in flight, reading
+      // the current register here would clear the wrong register's dirty key.
       if (editedLang && cellIsStillSavedValue) {
-        markCellClean(translation._id, editedLang);
+        markCellClean(translation._id, editedLang, editedRegister);
       } else if (editedLang && !cellIsStillSavedValue) {
         // A NEWER edit landed on this cell while the PUT was in flight (e.g. the
         // user kept typing, or a blur-save was dropped by the in-flight guard).
@@ -809,8 +848,9 @@ export default function TranslationEditor() {
         }
       }
       // The edit was NOT persisted — keep THIS cell dirty so the leave guard
-      // still warns (per-cell, so other cells' state is untouched).
-      if (editedLang) markCellDirty(translation._id, editedLang);
+      // still warns (per-cell AND per-register: the register we tried to save,
+      // not the currently-selected one, since the user may have switched).
+      if (editedLang) markCellDirty(translation._id, editedLang, editedRegister);
       showToast(`Save failed — your edit was NOT saved: ${msg}`, "error");
     } finally {
       // Release the per-cell in-flight guard so the NEXT genuine edit can save.
@@ -819,9 +859,10 @@ export default function TranslationEditor() {
       // flight. Done AFTER releasing the in-flight guard above so this re-invoke
       // isn't dropped as "concurrent". The re-save's change-guard (baseline now
       // === the just-persisted value) makes it a no-op once the value settles,
-      // so this can't loop forever.
+      // so this can't loop forever. Pass the SAVED register so the re-save targets
+      // the same register even if the user switched the selector mid-flight.
       if (pendingResave && editedLang) {
-        saveTranslation(pendingResave, editedLang);
+        saveTranslation(pendingResave, editedLang, editedRegister);
       }
       setTimeout(() => setSaving(null), 600);
     }
@@ -1230,8 +1271,12 @@ export default function TranslationEditor() {
 
   // ─── Keyboard Navigation ──────────────────────────────────────
 
+  // Capture the change-guard baseline for the focused cell, keyed by the cell's
+  // register so the formal baseline never overwrites the default one for the same
+  // (id, lang). English is always "default"; other langs use the active register.
   function handleCellFocus(translationId: string, lang: string, value: string) {
-    originalValueRef.current[`${translationId}:${lang}`] = value;
+    const register = effectiveRegister(lang);
+    originalValueRef.current[`${translationId}:${lang}:${register}`] = value;
     setCellFocused(true);
   }
 
@@ -1246,13 +1291,17 @@ export default function TranslationEditor() {
 
     if (e.key === "Escape") {
       e.preventDefault();
-      const refKey = `${translation._id}:${lang}`;
+      // Register-qualified key so the baseline read, the dirty-set clear, and the
+      // skip-next-blur flag all reference the SAME cell as the focus/blur/save
+      // paths — a Escape in "formal" must not touch the "default" cell's state.
+      const register = effectiveRegister(lang);
+      const refKey = `${translation._id}:${lang}:${register}`;
       const original = originalValueRef.current[refKey] ?? "";
       handleValueChange(translation._id, lang, original);
       // Escape reverts to the baseline → THIS cell is clean again. Clear only
       // its dirty key (handleValueChange above re-added it); other cells that
       // are still dirty must keep warning on leave.
-      markCellClean(translation._id, lang);
+      markCellClean(translation._id, lang, register);
       // The revert above is queued, not committed — so the blur this triggers
       // would otherwise save the still-edited closure value. Flag this cell so
       // the onBlur skips its save exactly once: Escape is a true cancel.
@@ -2746,8 +2795,9 @@ export default function TranslationEditor() {
                                 // If Escape just cancelled this cell, its revert
                                 // is still queued (not committed), so saving now
                                 // would persist the cancelled value. Skip exactly
-                                // this one save and clear the flag.
-                                const refKey = `${t._id}:${lang}`;
+                                // this one save and clear the flag. Register-
+                                // qualified to match the key the Escape handler set.
+                                const refKey = `${t._id}:${lang}:${langRegister}`;
                                 if (skipNextBlurSaveRef.current === refKey) {
                                   skipNextBlurSaveRef.current = null;
                                   setCellFocused(false);

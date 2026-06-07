@@ -73,8 +73,9 @@ function validateEnv() {
   }
 
   // Vertex preflight: if Vertex mode is on, the service-account file must exist
-  // NOW — otherwise every AI call fails at runtime with an opaque auth error.
-  // Fail fast at boot instead (self-host forgot to mount sa.json).
+  // AND GOOGLE_CLOUD_PROJECT must be set (the @google/genai Vertex client needs
+  // the project id — services/ai-provider.ts) — otherwise every AI call fails at
+  // runtime with an opaque error. Fail fast at boot instead.
   if (useVertex) {
     const saPath = process.env.GOOGLE_APPLICATION_CREDENTIALS || "";
     if (!saPath || !existsSync(saPath)) {
@@ -84,19 +85,30 @@ function validateEnv() {
       );
       process.exit(1);
     }
+    if (!process.env.GOOGLE_CLOUD_PROJECT) {
+      console.error(
+        "FATAL: GEMINI_USE_VERTEX=true but GOOGLE_CLOUD_PROJECT is unset — Vertex needs the GCP project id."
+      );
+      process.exit(1);
+    }
   }
 
-  // Self-host footguns: warn loudly when placeholder/insecure defaults survive
-  // from .env.example — they boot, but break invites or ship a known DB password.
+  // Placeholder/insecure defaults from .env.example. In PRODUCTION (the self-host
+  // stack boots with NODE_ENV=production) these are operationally unsafe, so we
+  // REFUSE to start; outside production they're a warning so local testing still
+  // works out of the box.
+  const insecureDefault = (msg: string) => {
+    if (process.env.NODE_ENV === "production") {
+      console.error("FATAL: " + msg);
+      process.exit(1);
+    }
+    console.warn("[BhashaJS] " + msg);
+  };
   if (/:changeme@/i.test(process.env.MONGO_CONNECTION_URL || "")) {
-    console.warn(
-      "[BhashaJS] MONGO password is still 'changeme' — set a strong MONGO_ROOT_PASSWORD before exposing this."
-    );
+    insecureDefault("MONGO password is still 'changeme' — set a strong MONGO_ROOT_PASSWORD.");
   }
   if (/example\.com/i.test(process.env.APP_URL || "")) {
-    console.warn(
-      "[BhashaJS] APP_URL is still the placeholder (example.com) — invite links will point to the wrong host. Set your real dashboard URL."
-    );
+    insecureDefault("APP_URL is still the placeholder (example.com) — set your real dashboard URL or invite links break.");
   }
 }
 

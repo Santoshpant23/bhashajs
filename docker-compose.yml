@@ -25,6 +25,51 @@ services:
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-changeme}
     volumes:
       - mongo_data:/data/db
+      # The replica-set member keyfile is generated once on first boot (see the
+      # entrypoint below) and persisted so it stays stable across restarts.
+      - mongo_keyfile:/etc/mongo-keyfile
+    # ─── Single-node REPLICA SET (not standalone) ───────────────────────────
+    # Multi-document transactions REQUIRE a replica set; a standalone mongod
+    # cannot run them. The server's translation write + its compliance audit
+    # row commit together inside one transaction, so on this bundled Mongo the
+    # audit guarantee holds atomically (a standalone would silently fall back to
+    # non-transactional writes). One node is enough to get the oplog/replication
+    # machinery transactions need.
+    #
+    # Auth + replSet needs an inter-member keyfile. We generate it on first boot
+    # (idempotent), lock it to 0400/owner mongodb, then hand off to the stock
+    # entrypoint with --replSet/--keyFile so the whole thing is turnkey — no
+    # manual keyfile or rs.initiate() step for the operator.
+    entrypoint:
+      - bash
+      - -c
+      - |
+        set -e
+        KF=/etc/mongo-keyfile/keyfile
+        if [ ! -f "$$KF" ]; then
+          openssl rand -base64 756 > "$$KF"
+        fi
+        chmod 400 "$$KF"
+        chown mongodb:mongodb "$$KF" || true
+        exec docker-entrypoint.sh mongod --replSet rs0 --keyFile "$$KF" --bind_ip_all
+    healthcheck:
+      # Idempotent one-time init: try rs.status(); if the set isn't initiated
+      # yet, rs.initiate() it (single member, addressed as the compose service
+      # name so the server can reach the primary). Once a primary is elected the
+      # check reports healthy, which is what `server` waits on. Authenticates as
+      # root because auth is on; rs.initiate() works under the localhost
+      # exception on the very first run before any user check applies.
+      test:
+        - CMD-SHELL
+        - >
+          mongosh -u root -p "$${MONGO_INITDB_ROOT_PASSWORD}" --authenticationDatabase admin --quiet --eval
+          "try { if (rs.status().ok === 1) quit(0) } catch (e) {
+             rs.initiate({_id:'rs0',members:[{_id:0,host:'mongo:27017'}]})
+           } quit(rs.status().ok === 1 ? 0 : 1)"
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
     # Not exposed to host in production — only server connects internally
 
   server:
@@ -34,7 +79,12 @@ services:
     restart: unless-stopped
     logging: *default-logging
     depends_on:
-      - mongo
+      mongo:
+        # Wait until Mongo is not just up but a HEALTHY replica set with a
+        # primary — otherwise the server could connect before rs.initiate()
+        # runs and its first transaction would error. (The server also retries
+        # the Mongo connection at boot as a second line of defence.)
+        condition: service_healthy
     # Pass the WHOLE .env (Vertex, SMTP, GEMINI_MODEL, RUN_MIGRATIONS,
     # AI_MONTHLY_CAP_DEFAULT, APP_URL, …) — the old cherry-picked list silently
     # dropped most of it. `environment` below overrides only the few values that
@@ -43,7 +93,15 @@ services:
     environment:
       NODE_ENV: production
       PORT: 5000
-      MONGO_CONNECTION_URL: mongodb://root:${MONGO_ROOT_PASSWORD:-changeme}@mongo:27017/bhashajs?authSource=admin
+      # Point at the replica set so the driver discovers the primary and
+      # multi-document transactions are available. `replicaSet=rs0` switches the
+      # driver into RS-aware topology and it discovers the primary from the seed
+      # host. We initiate the set with host `mongo:27017` (the compose service
+      # name), so the RS advertises an address that resolves on the compose
+      # network — the seed host and the advertised host match, and discovery
+      # succeeds. (NOT directConnection: that forces Single topology and would
+      # contradict replicaSet; a true RS connection is what gives transactions.)
+      MONGO_CONNECTION_URL: mongodb://root:${MONGO_ROOT_PASSWORD:-changeme}@mongo:27017/bhashajs?authSource=admin&replicaSet=rs0
       CORS_ORIGIN: ${CORS_ORIGIN:-https://bhashajs.com}
     volumes:
       # Mount the service-account dir so the Vertex AI path works on self-host:
@@ -80,5 +138,6 @@ services:
 
 volumes:
   mongo_data:
+  mongo_keyfile:
   caddy_data:
   caddy_config:
