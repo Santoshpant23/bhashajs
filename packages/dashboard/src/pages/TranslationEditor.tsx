@@ -40,6 +40,7 @@ import {
   MessageSquare,
   Send,
   BookOpen,
+  Shield,
 } from "lucide-react";
 import { useNotifications } from "../context/NotificationContext";
 
@@ -171,6 +172,32 @@ interface HistoryEntry {
   source: string;
   changedBy: { _id: string; name: string };
   createdAt: string;
+}
+
+// ─── Compliance audit (owner-only) ──────────────────────────
+// The sellable artifact: per regulated key, its citation + current per-cell
+// status + the full approval history (each event's approver resolved to
+// name/email). Mirrors GET /projects/:id/compliance/audit.
+interface AuditEvent {
+  lang: string;
+  register: Register;
+  oldValue: string;
+  newValue: string;
+  source: string;
+  changedBy: { name: string; email: string };
+  createdAt: string;
+}
+interface AuditKey {
+  key: string;
+  mandatedBy: string;
+  fullyApproved: boolean;
+  statuses: { lang: string; register: Register; status: string }[];
+  history: AuditEvent[];
+}
+interface ComplianceSummary {
+  total: number;
+  fullyApproved: number;
+  withPending: number;
 }
 
 // Language display names — 13 South Asian languages + English + Latin-script variants
@@ -385,6 +412,13 @@ export default function TranslationEditor() {
   const [batchLang, setBatchLang] = useState("");
   const [batchProgress, setBatchProgress] = useState("");
   const [reviewQueueMode, setReviewQueueMode] = useState(false);
+
+  // Compliance audit (owner-only) — the regulated-key trail + export.
+  const [showCompliance, setShowCompliance] = useState(false);
+  const [complianceLoading, setComplianceLoading] = useState(false);
+  const [auditKeys, setAuditKeys] = useState<AuditKey[]>([]);
+  const [complianceSummary, setComplianceSummary] = useState<ComplianceSummary | null>(null);
+  const [exportingAudit, setExportingAudit] = useState(false);
 
   // ─── Data Fetching ───────────────────────────────────────────
   useEffect(() => {
@@ -682,6 +716,69 @@ export default function TranslationEditor() {
   function toggleActivity() {
     if (!showActivity) fetchRecentHistory();
     setShowActivity(!showActivity);
+  }
+
+  // ─── Compliance audit (owner-only) ────────────────────────────
+
+  // Open the compliance panel and load both the per-key trail and the roll-up
+  // summary. Owner-only on the server; the button is also owner-gated, but a
+  // 403 here just leaves the panel empty rather than throwing.
+  async function openCompliance() {
+    setShowCompliance(true);
+    setComplianceLoading(true);
+    try {
+      const [auditRes, summaryRes] = await Promise.all([
+        api.get(`/projects/${projectId}/compliance/audit`),
+        api.get(`/projects/${projectId}/compliance/summary`),
+      ]);
+      setAuditKeys(auditRes.data.data.keys || []);
+      setComplianceSummary(summaryRes.data.data);
+    } catch (e) {
+      setAuditKeys([]);
+      setComplianceSummary(null);
+      showToast(getErrorMessage(e), "error");
+    } finally {
+      setComplianceLoading(false);
+    }
+  }
+
+  // Download the audit trail. JSON re-fetches the full object; CSV asks the
+  // server for its flat one-row-per-event export (responseType "text" so axios
+  // doesn't try to JSON-parse it). Both go through the existing blob helpers.
+  async function exportAudit(format: "json" | "csv") {
+    if (!project) return;
+    setExportingAudit(true);
+    try {
+      if (format === "json") {
+        const res = await api.get(`/projects/${projectId}/compliance/audit`);
+        downloadJson(res.data.data, `${project.name}-compliance-audit.json`);
+      } else {
+        const res = await api.get(`/projects/${projectId}/compliance/audit`, {
+          params: { format: "csv" },
+          responseType: "text",
+        });
+        downloadBlob(
+          res.data,
+          `${project.name}-compliance-audit.csv`,
+          "text/csv;charset=utf-8;"
+        );
+      }
+      showToast(`Audit trail exported (${format.toUpperCase()})`);
+    } catch (e) {
+      showToast(getErrorMessage(e), "error");
+    } finally {
+      setExportingAudit(false);
+    }
+  }
+
+  // The most recent approver/author of a regulated key, for the row tooltip.
+  // Prefers an approval event; falls back to the newest event overall.
+  function lastApproverFor(key: string): { name: string; source: string } | null {
+    const audit = auditKeys.find((k) => k.key === key);
+    if (!audit || audit.history.length === 0) return null;
+    const approval = audit.history.find((h) => h.source === "approved");
+    const ev = approval || audit.history[0];
+    return { name: ev.changedBy?.name || "Unknown", source: ev.source };
   }
 
   // ─── Comments ─────────────────────────────────────────────────
@@ -1332,6 +1429,16 @@ export default function TranslationEditor() {
               Packs
             </button>
           )}
+          {myRole === "owner" && (
+            <button
+              className="btn-ghost"
+              onClick={openCompliance}
+              title="Auditable compliance trail for regulated keys — who approved what, when, against which citation"
+            >
+              <Shield size={16} />
+              Compliance
+            </button>
+          )}
           {!isViewer && (
             <button
               className={`btn-ghost ${voiceMode ? "active" : ""}`}
@@ -1820,6 +1927,127 @@ export default function TranslationEditor() {
           </div>
         )}
 
+        {/* ─── Compliance Audit Modal (owner-only) ────────────── */}
+        {showCompliance && (
+          <div className="modal-overlay" onClick={() => setShowCompliance(false)}>
+            <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header-row">
+                <h3>
+                  <Shield size={18} style={{ verticalAlign: "middle", marginRight: 8 }} />
+                  Compliance Audit
+                </h3>
+                <button className="btn-icon" onClick={() => setShowCompliance(false)}>
+                  <X size={18} />
+                </button>
+              </div>
+              <p className="form-hint" style={{ marginBottom: "1rem" }}>
+                Auditable trail of every regulated key — who approved which copy,
+                when, and against which regulator citation. Export it as evidence
+                for your compliance review.
+              </p>
+
+              {/* Summary banner */}
+              {complianceSummary && (
+                <div className="compliance-summary">
+                  <div className="compliance-stat">
+                    <span className="compliance-stat-num">{complianceSummary.total}</span>
+                    <span className="compliance-stat-label">Regulated keys</span>
+                  </div>
+                  <div className="compliance-stat compliance-stat-ok">
+                    <span className="compliance-stat-num">{complianceSummary.fullyApproved}</span>
+                    <span className="compliance-stat-label">Fully approved</span>
+                  </div>
+                  <div className="compliance-stat compliance-stat-pending">
+                    <span className="compliance-stat-num">{complianceSummary.withPending}</span>
+                    <span className="compliance-stat-label">Need review</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Export actions */}
+              <div className="compliance-export-bar">
+                <button
+                  className="btn-ghost"
+                  onClick={() => exportAudit("json")}
+                  disabled={exportingAudit}
+                >
+                  <Download size={14} /> Export audit trail (JSON)
+                </button>
+                <button
+                  className="btn-ghost"
+                  onClick={() => exportAudit("csv")}
+                  disabled={exportingAudit}
+                >
+                  <Download size={14} /> Export audit trail (CSV)
+                </button>
+              </div>
+
+              {/* Per-key list */}
+              {complianceLoading ? (
+                <p>Loading compliance trail…</p>
+              ) : auditKeys.length === 0 ? (
+                <p className="text-muted">
+                  No regulated keys yet. Lock a key (toggle “regulated” with a
+                  citation) to start an audit trail.
+                </p>
+              ) : (
+                <div className="compliance-list">
+                  {auditKeys.map((k) => {
+                    const approval = k.history.find((h) => h.source === "approved");
+                    const lastEvent = approval || k.history[0];
+                    return (
+                      <div key={k.key} className="compliance-card">
+                        <div className="compliance-card-header">
+                          <code className="key-name">
+                            <span style={{ marginRight: "0.4em" }} aria-hidden>🔒</span>
+                            {k.key}
+                          </code>
+                          <span
+                            className={`compliance-badge ${
+                              k.fullyApproved ? "compliance-badge-ok" : "compliance-badge-pending"
+                            }`}
+                          >
+                            {k.fullyApproved ? "Fully approved" : "Needs review"}
+                          </span>
+                        </div>
+                        {k.mandatedBy && (
+                          <p className="compliance-citation">
+                            <strong>Citation:</strong> {k.mandatedBy}
+                          </p>
+                        )}
+                        <div className="compliance-statuses">
+                          {k.statuses.length === 0 ? (
+                            <span className="text-muted">No localized cells yet.</span>
+                          ) : (
+                            k.statuses.map((s, i) => (
+                              <span
+                                key={`${s.lang}-${s.register}-${i}`}
+                                className={`compliance-cell-badge compliance-cell-${s.status}`}
+                                title={`${LANG_NAMES[s.lang] || s.lang} · ${s.register}: ${s.status}`}
+                              >
+                                {LANG_NAMES[s.lang] || s.lang}/{s.register}: {s.status}
+                              </span>
+                            ))
+                          )}
+                        </div>
+                        {lastEvent && (
+                          <p className="compliance-last-approver">
+                            Last {lastEvent.source} by{" "}
+                            <strong>{lastEvent.changedBy?.name || "Unknown"}</strong>
+                            {lastEvent.changedBy?.email ? ` (${lastEvent.changedBy.email})` : ""}
+                            {" · "}
+                            {new Date(lastEvent.createdAt).toLocaleString()}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* ─── AI Translate Modal ─────────────────────────────── */}
         {showAIModal && (
           <div className="modal-overlay" onClick={() => !aiTranslating && setShowAIModal(false)}>
@@ -2164,20 +2392,31 @@ export default function TranslationEditor() {
                     {/* Key column */}
                     <td className="col-key">
                       <code className="key-name">
-                        {t.regulated && (
-                          <span
-                            className="regulated-lock"
-                            title={
-                              t.mandatedBy
-                                ? `Compliance lock — ${t.mandatedBy}. AI drafts on this key are NOT served by the SDK until you approve them.`
-                                : "Compliance lock — AI drafts on this key are NOT served by the SDK until you approve them."
-                            }
-                            style={{ marginRight: "0.4em", cursor: "help" }}
-                            aria-label="regulated"
-                          >
-                            🔒
-                          </span>
-                        )}
+                        {t.regulated && (() => {
+                          // Surface the regulator citation + last approver (from
+                          // the loaded audit data, if the owner has opened the
+                          // Compliance panel this session) in the tooltip, not
+                          // just a bare lock. Owners can click to open the trail.
+                          const approver = lastApproverFor(t.key);
+                          const base = t.mandatedBy
+                            ? `Compliance lock — ${t.mandatedBy}.`
+                            : "Compliance lock —";
+                          const approverNote = approver
+                            ? ` Last ${approver.source} by ${approver.name}.`
+                            : "";
+                          const tip = `${base}${approverNote} AI drafts on this key are NOT served by the SDK until an owner approves them.${isOwner ? " Click to open the audit trail." : ""}`;
+                          return (
+                            <span
+                              className="regulated-lock"
+                              title={tip}
+                              style={{ marginRight: "0.4em", cursor: isOwner ? "pointer" : "help" }}
+                              aria-label="regulated"
+                              onClick={isOwner ? openCompliance : undefined}
+                            >
+                              🔒
+                            </span>
+                          );
+                        })()}
                         {t.key}
                       </code>
                       {t.context && <span className="key-context">{t.context}</span>}

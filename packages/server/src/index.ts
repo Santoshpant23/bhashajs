@@ -21,6 +21,7 @@ import glossaryRoutes from "./routes/glossary";
 import apiKeyRoutes from "./routes/apiKeys";
 import sdkRoutes from "./routes/sdk";
 import packRoutes from "./routes/packs";
+import complianceRoutes from "./routes/compliance";
 import { migrateRegisters } from "./utils/migrateRegisters";
 import { seedVerticalPacks } from "./utils/seedPacks";
 
@@ -192,6 +193,7 @@ app.use("/api", teamRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/translations", commentRoutes);
 app.use("/api/projects/:projectId/glossary", glossaryRoutes);
+app.use("/api/projects/:projectId/compliance", complianceRoutes);
 app.use("/api/projects/:projectId/keys", apiKeyRoutes);
 app.use("/api", packRoutes);
 
