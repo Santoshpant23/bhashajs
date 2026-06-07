@@ -26,6 +26,7 @@ import DocLayout from "../../components/DocLayout.astro";
 
   <p>Fill in the required values:</p>
   <ul>
+    <li><code>DOMAIN</code> — the domain you'll serve on, e.g. <code>app.example.com</code> (its DNS must point at this server). Caddy provisions HTTPS for it automatically. Leave it unset to serve on <code>localhost</code> for local testing.</li>
     <li><code>JWT_SECRET</code> — generate with <code>openssl rand -hex 32</code></li>
     <li><code>GEMINI_API_KEY</code> — your Gemini API key</li>
     <li><code>MONGO_ROOT_PASSWORD</code> — strong random password (used by the bundled MongoDB)</li>
@@ -34,9 +35,9 @@ import DocLayout from "../../components/DocLayout.astro";
 
   <h2>3. Deploy</h2>
   <pre><code><span class="tok-fn">chmod +x</span> deploy.sh
-./deploy.sh you@email.com</code></pre>
-  <p>This brings up the stack (nginx + bundled MongoDB), obtains a Let's Encrypt certificate via <strong>certbot</strong>, and switches nginx over to HTTPS. Takes about 60 seconds.</p>
-  <p class="tok-cmt"><em>Note: this self-host path uses nginx + certbot for TLS. The hosted service at <code>api.bhashajs.com</code> runs a slimmer server-only stack behind <strong>Caddy</strong> (automatic HTTPS) — a separate <code>docker-compose.prod.yml</code> you don't need when self-hosting.</em></p>
+./deploy.sh</code></pre>
+  <p>That's the whole deploy. It brings up the stack (bundled MongoDB + the API + <strong>Caddy</strong>) and Caddy obtains a Let's Encrypt certificate for your <code>DOMAIN</code> automatically — and renews it on its own. No certbot, no cert paths, no config to edit. Give it a few seconds on first boot while the certificate is issued.</p>
+  <p class="tok-cmt"><em>Note: the hosted service at <code>api.bhashajs.com</code> runs the same Caddy auto-HTTPS approach, via a slimmer server-only stack (<code>docker-compose.prod.yml</code>) you don't need when self-hosting.</em></p>
 
   <h2>4. Verify</h2>
   <ul>
@@ -54,10 +55,10 @@ import DocLayout from "../../components/DocLayout.astro";
 
   <h2>What's running</h2>
   <ul>
-    <li><strong>Backend API</strong> (Express + MongoDB) — at <code>:5000</code> behind nginx</li>
-    <li><strong>Dashboard</strong> (React + Vite SPA) — static files served by nginx</li>
+    <li><strong>Backend API</strong> (Express + MongoDB) — at <code>:5000</code> behind Caddy</li>
+    <li><strong>Dashboard</strong> (React + Vite SPA) — static files served by Caddy</li>
     <li><strong>MongoDB 7</strong> — local container with persistent volume</li>
-    <li><strong>nginx</strong> — TLS termination, reverse proxy</li>
+    <li><strong>Caddy</strong> — automatic TLS (Let's Encrypt) + reverse proxy, certs persisted in a volume</li>
   </ul>
 
   <h2>Backups</h2>

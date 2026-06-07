@@ -83,6 +83,10 @@ export function I18nProvider({
 
   // useRef to hold the client so it persists across renders
   const clientRef = useRef<TranslationClient | null>(null);
+  // The config identity the current client was built for — so we recreate it
+  // when projectId/projectKey/apiUrl/apiToken change (the init effect re-runs on
+  // projectId, but without this it would keep using the OLD client).
+  const clientConfigRef = useRef<string>("");
 
   // A (lang, register) pair is ONE atomic locale target. Tracking the two
   // dimensions with separate request counters let an interleaved
@@ -98,9 +102,13 @@ export function I18nProvider({
   const pendingLangRef = useRef(defaultLang);
   const pendingRegisterRef = useRef<Register>(initialResolvedRegister);
 
-  // Create the client once on mount
-  if (!clientRef.current) {
+  // Create the client on mount — and RECREATE it if the identifying config
+  // changes, so a changed projectId/projectKey doesn't keep serving the old
+  // project's data.
+  const clientConfig = `${projectId}|${projectKey}|${apiUrl}|${apiToken}`;
+  if (!clientRef.current || clientConfigRef.current !== clientConfig) {
     clientRef.current = new TranslationClient(projectId, apiUrl, apiToken, projectKey);
+    clientConfigRef.current = clientConfig;
 
     // If preloaded translations were provided, load them into cache immediately
     if (preloadedTranslations) {
@@ -165,7 +173,7 @@ export function I18nProvider({
 
     init();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId]); // Re-init only if projectId changes
+  }, [projectId, projectKey, apiUrl, apiToken]); // Re-init when the project identity changes
 
   // ─── Atomic locale switching ─────────────────────────────────
   // (lang, register) is ONE locale target. Every switch updates the pending

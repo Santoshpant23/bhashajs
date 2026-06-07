@@ -15,7 +15,7 @@ import DocLayout from "../../components/DocLayout.astro";
   </p>
 
   <h2>1. Hindi treats 0 as singular. Most tools don't.</h2>
-  <p>CLDR says Hindi, Bengali, Gujarati, Kannada, Marathi, Punjabi and Sinhala treat <strong>both 0 and 1</strong> as the singular ("one") category. English treats 0 as plural. A generic setup applies English rules globally:</p>
+  <p>CLDR treats <strong>both 0 and 1</strong> as the singular ("one") category for Hindi, Bengali, Gujarati, Kannada, Punjabi and Sinhala (and bhasha-js extends the same 0-as-singular rule to Marathi for South-Asian consistency). English treats 0 as plural. A generic setup applies English rules globally:</p>
   <pre><code><span class="tok-cmt">// generic i18n, default config</span>
 <span class="tok-fn">t</span>(<span class="tok-str">"items"</span>, &#123; count: <span class="tok-str">0</span> &#125;)   <span class="tok-cmt">// Hindi → "0 आइटमें"  ✗ wrong (plural)</span>
 

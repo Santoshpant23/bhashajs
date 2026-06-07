@@ -788,6 +788,20 @@ router.post(
         );
       }
 
+      // ─── Bulletproof settlement (every exit path: success/abort/exception) ──
+      // We reserved `reservedCount` keys above. Below we record `writtenCount` =
+      // the ACTUAL cells persisted. The `finally` runs on EVERY way out of the
+      // post-reservation block (normal return, client abort, or a throw that
+      // propagates to the outer catch) and refunds exactly the difference. So:
+      //   - abort/throw BEFORE persistence  → writtenCount 0 → refund all;
+      //   - abort/throw AFTER some saves     → refund only the unwritten cells
+      //                                        (written work stays counted);
+      //   - success with partial AI failures → refund the failed/dropped keys.
+      // Refunding `reserved - written` (never the written work) makes a
+      // double-refund impossible — the arithmetic is settled exactly once.
+      const reservedCount = toTranslate.length;
+      let writtenCount = 0;
+
       // Cancel in-flight AI work only if the CLIENT actually disconnects.
       // NOTE: `req.on("close")` also fires on normal request-body completion, so
       // using it would abort every request. The reliable signal is the RESPONSE
@@ -802,6 +816,7 @@ router.post(
       };
       res.on("close", onClose);
 
+      try {
       const langNames: Record<string, string> = {
         hi: "Hindi", bn: "Bengali", ur: "Urdu", ta: "Tamil", te: "Telugu",
         mr: "Marathi", ne: "Nepali", pa: "Punjabi (Gurmukhi)", "pa-PK": "Punjabi (Shahmukhi)",
@@ -858,11 +873,11 @@ router.post(
         controller.signal
       );
 
-      // Client went away mid-flight — stop here without persisting (the abort
-      // signal already cancelled the upstream call) and don't meter aborted work.
+      // Client went away mid-flight (before we persisted anything) — stop here
+      // without persisting. The abort signal already cancelled the upstream
+      // call; writtenCount stays 0 so the finally refunds the whole reservation.
       if (aborted) {
-        req.off("close", onClose);
-        return; // connection is already closed; nothing to send
+        return; // connection is already closed; nothing to send (finally settles)
       }
 
       const translatedKeys: string[] = [];
@@ -875,6 +890,10 @@ router.post(
           t.source = "ai";
           t.updatedAt = new Date();
           await t.save();
+          // Count the cell the instant it's durably saved. If the client
+          // disconnects mid-loop, everything written so far stays metered
+          // (the finally only refunds reserved - writtenCount).
+          writtenCount++;
           await recordHistory(
             t._id, projectId, targetLang, targetRegister, t.key,
             oldValue, aiResults[t.key], "ai", req.userId!
@@ -911,14 +930,6 @@ router.post(
         .filter((t) => !aiResults[t.key])
         .map((t) => t.key);
 
-      // Refund the reserved keys that weren't actually written (failed batches,
-      // script-guard drops, or a client abort) so only real work counts.
-      res.off("close", onClose);
-      const unusedKeys = aborted
-        ? toTranslate.length
-        : toTranslate.length - translatedKeys.length;
-      if (unusedKeys > 0) await refundUsage(projectId as string, unusedKeys);
-
       return sendSuccess(res, 200, {
         message:
           `AI translated ${translatedKeys.length} key(s) to ${targetLangName} (${targetRegister})` +
@@ -929,6 +940,15 @@ router.post(
         keys: translatedKeys,
         failedKeys,
       });
+      } finally {
+        // SINGLE settlement point — runs on success, client abort, AND any throw
+        // that propagates to the outer catch (the finally executes before the
+        // catch). Refund exactly the reserved keys that weren't persisted; never
+        // refund written work, so this can't double-refund.
+        res.off("close", onClose);
+        const refund = reservedCount - writtenCount;
+        if (refund > 0) await refundUsage(projectId as string, refund);
+      }
     } catch (e: any) {
       console.error("[BhashaJS] AI translation error:", e.message);
       return sendError(res, 500, e.message || "AI translation failed");
@@ -1232,6 +1252,15 @@ router.post(
         );
       }
 
+      // ─── Bulletproof settlement (every exit path: success/abort/exception) ──
+      // Same contract as /ai-translate: reservedCount voice cells reserved above,
+      // writtenCount = cells actually persisted. The finally refunds exactly
+      // reservedCount - writtenCount on EVERY exit (success, client abort, or a
+      // throw bubbling to the outer catch), so written work is never refunded and
+      // a leaked/double refund is impossible.
+      const reservedCount = candidates.length;
+      let writtenCount = 0;
+
       // Cancel in-flight AI work on a real client disconnect (see /ai-translate
       // for why this is res.on("close") + writableEnded, not req.on("close")).
       const controller = new AbortController();
@@ -1243,6 +1272,7 @@ router.post(
       };
       res.on("close", onClose);
 
+      try {
       const langNames: Record<string, string> = {
         hi: "Hindi", bn: "Bengali", ur: "Urdu", ta: "Tamil", te: "Telugu",
         mr: "Marathi", ne: "Nepali", pa: "Punjabi (Gurmukhi)", "pa-PK": "Punjabi (Shahmukhi)",
@@ -1267,11 +1297,11 @@ router.post(
         controller.signal
       );
 
-      // Client disconnected mid-flight — abort already cancelled the upstream
-      // call; skip persistence and don't meter aborted work.
+      // Client disconnected mid-flight (before we persisted anything) — skip
+      // persistence. The abort signal already cancelled the upstream call;
+      // writtenCount stays 0 so the finally refunds the whole reservation.
       if (aborted) {
-        req.off("close", onClose);
-        return;
+        return; // connection is already closed; nothing to send (finally settles)
       }
 
       const generatedKeys: string[] = [];
@@ -1287,15 +1317,11 @@ router.post(
         writeVoiceCell(t, lang, register, { ipa: result.ipa, ssml: result.ssml });
         t.updatedAt = new Date();
         await t.save();
+        // Count the cell the instant it's durably saved — a mid-loop disconnect
+        // keeps everything written so far metered (finally refunds the rest).
+        writtenCount++;
         generatedKeys.push(t.key);
       }
-
-      // Refund the reserved cells that weren't generated (failures / abort).
-      res.off("close", onClose);
-      const unusedVoice = aborted
-        ? candidates.length
-        : candidates.length - generatedKeys.length;
-      if (unusedVoice > 0) await refundUsage(projectId as string, unusedVoice, true);
 
       return sendSuccess(res, 200, {
         message: `Generated voice data for ${generatedKeys.length} key(s) in ${langName} (${register})`,
@@ -1303,6 +1329,14 @@ router.post(
         register,
         keys: generatedKeys,
       });
+      } finally {
+        // SINGLE settlement point — runs on success, client abort, AND any throw
+        // bubbling to the outer catch. Refund exactly the reserved voice cells
+        // that weren't persisted; never refund written work (no double-refund).
+        res.off("close", onClose);
+        const refund = reservedCount - writtenCount;
+        if (refund > 0) await refundUsage(projectId as string, refund, true);
+      }
     } catch (e: any) {
       console.error("[BhashaJS] Voice generation error:", e?.message);
       return sendError(res, 500, e?.message || "Voice generation failed");

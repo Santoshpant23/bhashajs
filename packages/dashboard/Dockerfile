@@ -1,4 +1,4 @@
-# Stage 1: Build
+# Stage 1: Build the static SPA
 FROM node:20-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
@@ -9,14 +9,11 @@ RUN npm install
 COPY . .
 RUN npm run build
 
-# Stage 2: Serve with nginx
-FROM nginx:alpine AS runner
-COPY --from=builder /app/dist /usr/share/nginx/html
-# Boot with the HTTP-only config so nginx starts WITHOUT certs and can serve the
-# ACME webroot challenge on first deploy (the old default shipped the SSL config,
-# which referenced certs that don't exist yet → crash-loop). deploy.sh swaps in
-# the SSL config (nginx.ssl.conf) once Let's Encrypt has issued the certificate.
-COPY nginx.init.conf /etc/nginx/conf.d/default.conf
-COPY nginx.conf /etc/nginx/nginx.ssl.conf
+# Stage 2: Serve with Caddy (AUTOMATIC HTTPS — no certbot, no cert dance).
+# Caddy provisions a Let's Encrypt cert for a real $DOMAIN on first boot, or a
+# locally-trusted cert for `localhost`. The SPA ships at /srv; the Caddyfile
+# (in this package) handles the SPA fallback + /api proxy to the server container.
+FROM caddy:alpine AS runner
+COPY --from=builder /app/dist /srv
+COPY Caddyfile /etc/caddy/Caddyfile
 EXPOSE 80 443
-CMD ["nginx", "-g", "daemon off;"]

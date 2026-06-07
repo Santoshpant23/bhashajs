@@ -1,6 +1,10 @@
-# LOCAL-DEV / SELF-HOST stack (bundled Mongo + nginx + certbot).
+# LOCAL-DEV / SELF-HOST stack (bundled Mongo + Caddy auto-HTTPS).
 # Production runs `docker-compose.prod.yml` (server-only, Atlas + Vertex, behind
-# Caddy) — see that file. Do NOT point production at this one.
+# Caddy on the HOST) — see that file. Do NOT point production at this one.
+#
+# The dashboard image is Caddy serving the built SPA: it reverse-proxies /api to
+# the server and provisions TLS automatically (Let's Encrypt for a real $DOMAIN,
+# a locally-trusted cert for the default `localhost`). No certbot, no cert dance.
 #
 # All services cap their JSON logs so a chatty container can't fill the disk
 # (a real incident here once hit 93% disk).
@@ -52,19 +56,18 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    environment:
+      # The public address Caddy serves. Defaults to `localhost` (internal cert)
+      # so the stack works out of the box; set DOMAIN in .env for a real domain
+      # and Caddy auto-provisions a Let's Encrypt certificate.
+      DOMAIN: ${DOMAIN:-localhost}
     volumes:
-      - certbot_webroot:/var/www/certbot:ro
-      - certbot_certs:/etc/letsencrypt:ro
-
-  certbot:
-    image: certbot/certbot
-    volumes:
-      - certbot_webroot:/var/www/certbot
-      - certbot_certs:/etc/letsencrypt
-    # Runs once to get certs, then exits. Renewal via cron on host.
-    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do sleep 12h; certbot renew; done'"
+      # Persist issued certs/keys + Caddy's autosave config across restarts so a
+      # redeploy doesn't re-hit Let's Encrypt rate limits.
+      - caddy_data:/data
+      - caddy_config:/config
 
 volumes:
   mongo_data:
-  certbot_webroot:
-  certbot_certs:
+  caddy_data:
+  caddy_config:

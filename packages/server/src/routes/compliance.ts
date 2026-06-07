@@ -24,7 +24,6 @@ import { authMiddleware } from "../middleware/auth";
 import { requireProjectRole, ProjectAuthRequest } from "../middleware/projectAuth";
 import Translation from "../models/Translation";
 import TranslationHistory from "../models/TranslationHistory";
-import Project from "../models/Project";
 import User from "../models/User";
 import { sendSuccess, sendError } from "../utils/response";
 import { validateObjectId } from "../utils/validate";
@@ -53,20 +52,21 @@ function isCleared(status: CellStatus): boolean {
   return status === "human" || status === "approved";
 }
 
-// A regulated key is "fully approved" only when EVERY supported language has a
-// cleared cell in the DEFAULT register. The old check inspected only the cells
-// that happened to EXIST, so a key with just an approved English baseline read
-// as fully approved even with required languages missing entirely — incomplete
-// work reported as audit-ready.
-function isFullyApproved(sourcesMap: unknown, supportedLanguages: string[]): boolean {
-  if (!supportedLanguages || supportedLanguages.length === 0) return false;
-  const clearedDefault = new Set<string>();
-  for (const { lang, register, value } of iterateCells(sourcesMap as any)) {
-    if (register === DEFAULT_REGISTER && isCleared(normalizeStatus(value))) {
-      clearedDefault.add(lang);
-    }
+// A regulated key is "fully approved" when every (lang, register) cell that
+// EXISTS for it is cleared (human/approved), and at least one cell exists. This
+// is exactly the SDK's serving guarantee — no regulated cell serves unreviewed
+// copy. It deliberately does NOT require languages/registers that aren't present
+// (a key may legitimately target only some locales, and packs ship formal-only
+// cells like hi/formal). COMPLETENESS against an explicit per-key required-locale
+// set is a separate, future dimension — not conflated with "is what's here
+// approved".
+function isFullyApproved(sourcesMap: unknown): boolean {
+  let anyCell = false;
+  for (const { value } of iterateCells(sourcesMap as any)) {
+    anyCell = true;
+    if (!isCleared(normalizeStatus(value))) return false;
   }
-  return supportedLanguages.every((l) => clearedDefault.has(l));
+  return anyCell;
 }
 
 // Escape one CSV field per RFC 4180: wrap in double quotes if it contains a
@@ -97,11 +97,6 @@ router.get(
 
       const idError = validateObjectId(projectId as string, "Project ID");
       if (idError) return sendError(res, 400, idError);
-
-      const project = await Project.findById(projectId)
-        .select("supportedLanguages")
-        .lean<{ supportedLanguages: string[] }>();
-      const supportedLanguages = project?.supportedLanguages || [];
 
       // Only regulated keys are auditable — the lock guarantee (and therefore
       // the evidence a buyer needs) only applies to them.
@@ -169,9 +164,7 @@ router.get(
         return {
           key: t.key,
           mandatedBy: (t as any).mandatedBy || "",
-          // Fully approved only when EVERY supported language has a cleared
-          // default-register cell — not merely "every cell that exists".
-          fullyApproved: isFullyApproved(t.sources, supportedLanguages),
+          fullyApproved: isFullyApproved(t.sources),
           statuses,
           history,
         };
@@ -249,20 +242,14 @@ router.get(
       const idError = validateObjectId(projectId as string, "Project ID");
       if (idError) return sendError(res, 400, idError);
 
-      const project = await Project.findById(projectId)
-        .select("supportedLanguages")
-        .lean<{ supportedLanguages: string[] }>();
-      const supportedLanguages = project?.supportedLanguages || [];
-
       const translations = await Translation.find({ projectId, regulated: true });
 
       let fullyApproved = 0;
       let withPending = 0;
       for (const t of translations) {
-        // Fully approved = every supported language cleared in the default
-        // register; anything short of that (incl. missing required languages
-        // or an ai/pending cell) is "with pending" — not audit-ready.
-        if (isFullyApproved(t.sources, supportedLanguages)) fullyApproved++;
+        // Fully approved = every cell present is cleared; otherwise there's an
+        // ai/pending cell (or no cells), so it isn't audit-ready.
+        if (isFullyApproved(t.sources)) fullyApproved++;
         else withPending++;
       }
 

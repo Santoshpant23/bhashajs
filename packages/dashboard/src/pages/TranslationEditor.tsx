@@ -571,34 +571,74 @@ export default function TranslationEditor() {
     );
   }
 
-  // Save to server when user clicks out of a cell (onBlur). The server only
-  // touches the (editedLang, editedRegister) cell, so we send just that pair.
-  // Caller passes the actual edited language — we derive its effective
-  // register here so English always saves to "default".
+  // Save to server when user clicks out of a cell (onBlur) or hits Ctrl+S. The
+  // server only touches the (editedLang, editedRegister) cell, so we send just
+  // that pair. Caller passes the actual edited language — we derive its
+  // effective register here so English always saves to "default".
   async function saveTranslation(translation: Translation, editedLang?: string) {
-    setSaving(translation._id);
     const editedRegister = editedLang ? effectiveRegister(editedLang) : currentRegister;
+
+    // ─── Change-guard (covers EVERY caller: blur, Ctrl+S, and any future one) ──
+    // A PUT stamps the edited cell's provenance — for a regulated key that can
+    // flip an unreviewed AI/pending cell to a servable state. So a save must
+    // only fire when the value ACTUALLY changed versus what was last loaded or
+    // persisted. `originalValueRef` is the per-(id, lang) baseline captured on
+    // focus (blur path) and refreshed after each successful save below; the
+    // Ctrl+S path reuses that same baseline, so an unchanged AI cell is never
+    // promoted to "human" just because the owner pressed Ctrl+S over it.
+    if (editedLang) {
+      const refKey = `${translation._id}:${editedLang}`;
+      const currentValue = valueAt(translation, editedLang, editedRegister);
+      // Only guard when we have a baseline for this cell (set on focus / prior
+      // save). Without one we can't prove "unchanged", so fall through and save.
+      if (refKey in originalValueRef.current && currentValue === originalValueRef.current[refKey]) {
+        return; // No-op: nothing changed → no PUT, no provenance change.
+      }
+    }
+
+    setSaving(translation._id);
     try {
-      await api.put(`/translations/${translation._id}`, {
+      const res = await api.put(`/translations/${translation._id}`, {
         translations: translation.translations,
         context: translation.context,
         editedLang,
         editedRegister,
       });
-      // Update local state to reflect the per-(lang, register) source change
+      // Use the SERVER's canonical result for the cell's provenance instead of
+      // hardcoding "human". On a regulated key, a non-owner edit is stamped
+      // "pending" by the server (held for approval, NOT served by the SDK), so
+      // stamping "human" locally would mislead the UI into showing a withheld
+      // cell as live. The PUT returns the full saved translation; read the
+      // actually-stored source from it. If the response somehow lacks it, fall
+      // back to leaving the existing source as-is rather than assuming "human".
+      const saved = res.data?.data as Translation | undefined;
+      const serverSource = editedLang
+        ? saved?.sources?.[editedLang]?.[editedRegister]
+        : undefined;
       setTranslations((prev) =>
         prev.map((t) => {
           if (t._id !== translation._id) return t;
           const updatedSources = { ...(t.sources || {}) };
-          if (editedLang) {
+          if (editedLang && serverSource) {
             updatedSources[editedLang] = {
               ...(updatedSources[editedLang] || {}),
-              [editedRegister]: "human",
+              [editedRegister]: serverSource,
             };
           }
-          return { ...t, source: "human", sources: updatedSources };
+          // Mirror the row-level `source` from the server's saved doc when
+          // present; never blindly hardcode "human".
+          return { ...t, source: saved?.source ?? t.source, sources: updatedSources };
         })
       );
+      // Refresh the no-op baseline to what we just persisted so an immediate
+      // repeat save (e.g. blur then Ctrl+S) is correctly skipped.
+      if (editedLang) {
+        originalValueRef.current[`${translation._id}:${editedLang}`] = valueAt(
+          translation,
+          editedLang,
+          editedRegister
+        );
+      }
       setHasUnsaved(false);
       fetchStats();
     } catch (e) {
@@ -2464,16 +2504,14 @@ export default function TranslationEditor() {
                               value={cellValue}
                               onChange={(e) => handleValueChange(t._id, lang, e.target.value)}
                               onFocus={() => handleCellFocus(t._id, lang, cellValue)}
-                              onBlur={(e) => {
-                                // Only persist when the value ACTUALLY changed since
-                                // focus. Saving unconditionally would PUT on every blur
-                                // and stamp the cell source "human" — silently
-                                // overwriting AI/approved/pending provenance just
-                                // because the user clicked into and out of the cell.
-                                const original = originalValueRef.current[`${t._id}:${lang}`] ?? "";
-                                if (e.target.value !== original) {
-                                  saveTranslation(t, lang);
-                                }
+                              onBlur={() => {
+                                // saveTranslation owns the "did it actually
+                                // change?" guard now (comparing against
+                                // originalValueRef), so EVERY save path — blur,
+                                // Ctrl+S, future callers — skips the PUT and the
+                                // provenance stamp when nothing changed. We just
+                                // ask it to save; it no-ops on an unchanged cell.
+                                saveTranslation(t, lang);
                                 setCellFocused(false);
                               }}
                               onKeyDown={(e) => handleCellKeyDown(e, t, lang)}

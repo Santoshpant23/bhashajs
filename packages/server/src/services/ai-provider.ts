@@ -151,12 +151,49 @@ const AI_BATCH_SIZE = 40;
 // complementary: the race bounds latency, the signal frees the upstream call.
 const AI_CALL_TIMEOUT_MS = 60_000;
 
-function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+/**
+ * Run one timed AI attempt, cancelling the UPSTREAM request on timeout.
+ *
+ * The old `withTimeout` merely raced a Promise against a timer and rejected on
+ * expiry — but the underlying `generate()` fetch kept running (and stayed
+ * billable) while the retry fired. Here we mint a per-attempt AbortController,
+ * pass its signal into `run(signal)` (→ SDK config.abortSignal), and abort it
+ * the instant the timeout fires. We also LINK the route-supplied signal (client
+ * disconnect): if it aborts, the per-attempt aborts too, so the in-flight fetch
+ * is freed either way. The factory shape (run receives the signal) means each
+ * retry gets a FRESH, independent controller.
+ */
+function runWithTimeout<T>(
+  run: (signal: AbortSignal) => Promise<T>,
+  ms: number,
+  label: string,
+  routeSignal?: AbortSignal
+): Promise<T> {
+  const attemptController = new AbortController();
+
+  // If the route's signal (client disconnect) is already/then aborted, cancel
+  // this attempt too — keeps timeout-abort and disconnect-abort unified.
+  const linkAbort = () => attemptController.abort();
+  if (routeSignal) {
+    if (routeSignal.aborted) attemptController.abort();
+    else routeSignal.addEventListener("abort", linkAbort, { once: true });
+  }
+
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-    p.then(
-      (v) => { clearTimeout(timer); resolve(v); },
-      (e) => { clearTimeout(timer); reject(e); }
+    const timer = setTimeout(() => {
+      // Cancel the billable upstream call, then reject the wrapper.
+      attemptController.abort();
+      reject(new Error(`${label} timed out after ${ms}ms`));
+    }, ms);
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      if (routeSignal) routeSignal.removeEventListener("abort", linkAbort);
+    };
+
+    run(attemptController.signal).then(
+      (v) => { cleanup(); resolve(v); },
+      (e) => { cleanup(); reject(e); }
     );
   });
 }
@@ -325,12 +362,16 @@ class GeminiProvider implements AITranslationProvider {
 
       let parsed: Record<string, any> = {};
       // One attempt + one retry (covers transient timeouts / malformed JSON).
+      // Each attempt gets a fresh per-attempt signal (timeout-abort + linked
+      // route disconnect) so a timed-out call is actually cancelled upstream,
+      // not left running and billable while the retry fires.
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          const text = await withTimeout(
-            this.generate(prompt, signal),
+          const text = await runWithTimeout(
+            (attemptSignal) => this.generate(prompt, attemptSignal),
             AI_CALL_TIMEOUT_MS,
-            "Gemini translate"
+            "Gemini translate",
+            signal
           );
           parsed = extractJsonObject(text);
           if (Object.keys(parsed).length > 0) break;
@@ -339,6 +380,9 @@ class GeminiProvider implements AITranslationProvider {
             `[BhashaJS AI] translate batch attempt ${attempt + 1}/2 failed:`,
             error?.message
           );
+          // If the route signal was aborted (client disconnect), stop retrying —
+          // the upstream is gone and the route discards the result anyway.
+          if (signal?.aborted) break;
         }
       }
 
@@ -503,13 +547,16 @@ ${items}`;
 
     let parsed: Record<string, any> = {};
     // One attempt + one retry; tolerate fenced/partial JSON; never throw on a
-    // bad response — return whatever cells parsed cleanly.
+    // bad response — return whatever cells parsed cleanly. Each attempt gets a
+    // fresh per-attempt signal so a timeout cancels the upstream fetch instead
+    // of leaving it billable behind the retry.
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const text = await withTimeout(
-          this.generate(prompt, signal),
+        const text = await runWithTimeout(
+          (attemptSignal) => this.generate(prompt, attemptSignal),
           AI_CALL_TIMEOUT_MS,
-          "Gemini voice"
+          "Gemini voice",
+          signal
         );
         parsed = extractJsonObject(text);
         if (Object.keys(parsed).length > 0) break;
@@ -518,6 +565,8 @@ ${items}`;
           `[BhashaJS AI] voice generation attempt ${attempt + 1}/2 failed:`,
           error?.message
         );
+        // Route signal aborted (client disconnect) → stop retrying.
+        if (signal?.aborted) break;
       }
     }
 

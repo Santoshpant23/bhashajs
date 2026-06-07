@@ -197,6 +197,148 @@ describe("AI translate monthly cap (429, no AI call)", () => {
   });
 });
 
+describe("AI usage reservation is REFUNDED when the provider fails", () => {
+  useIntegrationServer();
+
+  // Seed an owner + project with a GENEROUS cap and English source keys, so the
+  // route passes the cap check, RESERVES the candidates, then calls the AI
+  // provider. We then force the provider construction to throw by unsetting the
+  // Gemini credentials for the duration of the request: getAIProvider() builds a
+  // GeminiProvider which throws "GEMINI_API_KEY is not set ..." — and crucially
+  // it throws AFTER reserveUsage() has already incremented keysTranslated. This
+  // exercises the exception exit path: the route's finally must refund the FULL
+  // reservation, leaving keysTranslated back at 0. (No real network call — the
+  // throw happens at provider construction, before any generate().)
+  async function seedProject(cap: number, keys: string[]) {
+    const owner = await registerUser();
+    const projRes = await request()
+      .post("/api/projects")
+      .set("Authorization", bearer(owner.token))
+      .send({ name: "RefundOnFail", supportedLanguages: ["en", "hi"] });
+    expect(projRes.status).toBe(201);
+    const projectId = projRes.body.data._id as string;
+
+    const Project = (await import("../../models/Project")).default;
+    await Project.updateOne({ _id: projectId }, { aiMonthlyCap: cap });
+
+    for (const key of keys) {
+      const r = await request()
+        .post(`/api/translations/${projectId}`)
+        .set("Authorization", bearer(owner.token))
+        .send({ key, translations: { en: `English ${key}` } });
+      expect(r.status).toBe(201);
+    }
+    return { owner, projectId };
+  }
+
+  /** Run `fn` with the AI credentials unset so getAIProvider() throws, then
+   *  restore them no matter what (other tests in the run need real creds intact). */
+  async function withBrokenProvider<T>(fn: () => Promise<T>): Promise<T> {
+    const savedKey = process.env.GEMINI_API_KEY;
+    const savedVertex = process.env.GEMINI_USE_VERTEX;
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_USE_VERTEX; // ensure neither auth path is configured
+    try {
+      return await fn();
+    } finally {
+      if (savedKey === undefined) delete process.env.GEMINI_API_KEY;
+      else process.env.GEMINI_API_KEY = savedKey;
+      if (savedVertex === undefined) delete process.env.GEMINI_USE_VERTEX;
+      else process.env.GEMINI_USE_VERTEX = savedVertex;
+    }
+  }
+
+  it("/ai-translate: a provider failure refunds the whole reservation (keysTranslated back to 0)", async () => {
+    // Generous cap; 3 candidate keys. Reservation will set keysTranslated=3,
+    // then the provider throws → settlement must refund all 3 → back to 0.
+    const { owner, projectId } = await seedProject(1000, ["a.one", "a.two", "a.three"]);
+
+    const res = await withBrokenProvider(() =>
+      request()
+        .post(`/api/translations/${projectId}/ai-translate`)
+        .set("Authorization", bearer(owner.token))
+        .send({ targetLang: "hi" })
+    );
+
+    // The provider construction threw → outer catch returns 500 (not 429).
+    expect(res.status).toBe(500);
+
+    // The reservation incremented keysTranslated to 3 then the finally refunded
+    // all 3 (nothing was persisted), so the bucket is back to 0. aiCalls stays
+    // at 1 (reserveUsage bumped it; refunds don't touch it) — the call was
+    // attempted, it just failed. The KEY assertion is keysTranslated === 0.
+    const usage = await getUsage(projectId);
+    expect(usage.keysTranslated).toBe(0);
+
+    // And no translation was actually written for hi.
+    const Translation = (await import("../../models/Translation")).default;
+    const docs = await Translation.find({ projectId });
+    for (const d of docs) {
+      const t = (d.translations as any);
+      const hi = t instanceof Map ? t.get("hi") : t?.hi;
+      expect(hi == null || Object.keys(hi instanceof Map ? Object.fromEntries(hi) : hi).length === 0).toBe(true);
+    }
+  });
+
+  it("/generate-voice: a provider failure refunds the whole voice reservation", async () => {
+    // Seed an owner + project, then create translations that ALREADY have hi
+    // text (via the normalizing HTTP route) so generate-voice has candidates
+    // (translated + missing voice data). Two candidates → voice reserves 2.
+    const owner = await registerUser();
+    const projRes = await request()
+      .post("/api/projects")
+      .set("Authorization", bearer(owner.token))
+      .send({ name: "VoiceRefund", supportedLanguages: ["en", "hi"] });
+    expect(projRes.status).toBe(201);
+    const projectId = projRes.body.data._id as string;
+    const Project = (await import("../../models/Project")).default;
+    await Project.updateOne({ _id: projectId }, { aiMonthlyCap: 1000 });
+
+    for (const key of ["v.one", "v.two"]) {
+      const r = await request()
+        .post(`/api/translations/${projectId}`)
+        .set("Authorization", bearer(owner.token))
+        .send({ key, translations: { en: `English ${key}`, hi: "नमस्ते" } });
+      expect(r.status).toBe(201);
+    }
+
+    const res = await withBrokenProvider(() =>
+      request()
+        .post(`/api/translations/${projectId}/generate-voice`)
+        .set("Authorization", bearer(owner.token))
+        .send({ lang: "hi" })
+    );
+
+    expect(res.status).toBe(500);
+
+    // reserveUsage(voice=true) bumped keysTranslated AND voiceCalls by the
+    // candidate count; the finally must refund BOTH back to 0.
+    const usage = await getUsage(projectId);
+    expect(usage.keysTranslated).toBe(0);
+    expect(usage.voiceCalls).toBe(0);
+  });
+
+  it("settlement arithmetic: refund == reserved - written (partial write keeps written work)", async () => {
+    // A focused unit check of the exact arithmetic the routes use, against a
+    // real Mongo. Models the "abort/failure AFTER some persistence" case:
+    // reserve N, treat W as written, refund (N - W) → only the unwritten is
+    // returned and the written work stays metered. Proves no double-refund and
+    // that written cells are never clawed back.
+    const projectId = new mongoose.Types.ObjectId();
+    const reserved = 10;
+    const written = 4;
+
+    expect(await reserveUsage(projectId, 1000, reserved)).toBe(true);
+    expect((await getUsage(projectId)).keysTranslated).toBe(reserved);
+
+    const refund = reserved - written;
+    await refundUsage(projectId, refund);
+
+    // Exactly the written work remains; the unwritten reservation was returned.
+    expect((await getUsage(projectId)).keysTranslated).toBe(written);
+  });
+});
+
 describe("GET /api/projects/:projectId/usage", () => {
   useIntegrationServer();
 

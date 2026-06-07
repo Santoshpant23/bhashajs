@@ -1,0 +1,34 @@
+# BhashaJS self-host edge — Caddy with AUTOMATIC HTTPS.
+#
+# The site address comes from $DOMAIN (set in .env, passed through by
+# docker-compose.yml). For a real public domain Caddy provisions a Let's Encrypt
+# certificate on first boot — no certbot, no cert paths, no config swap. For
+# `localhost` (the default) Caddy mints a locally-trusted internal cert instead,
+# so the stack works out of the box on a laptop too.
+#
+# Certs/keys persist in the caddy_data volume across restarts (see compose).
+
+{$DOMAIN:localhost} {
+	# Reverse-proxy the API to the server container.
+	handle /api/* {
+		reverse_proxy server:5000
+	}
+
+	# Everything else is the static React SPA. try_files falls back to
+	# index.html so client-side routes (e.g. /projects/123) resolve.
+	handle {
+		root * /srv
+		encode gzip zstd
+		try_files {path} /index.html
+		file_server
+	}
+
+	# Security headers (parity with the old nginx config).
+	header {
+		X-Frame-Options "SAMEORIGIN"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# Caddy adds HSTS automatically once TLS is active; this makes it explicit.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+	}
+}
