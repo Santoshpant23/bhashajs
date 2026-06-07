@@ -1152,6 +1152,111 @@ button[aria-disabled="true"] {
   user-select: all;
 }
 .api-key-actions { margin-bottom: 1.5rem; }
+
+/* ─── Scoped API Keys ───────────────────────── */
+.scoped-keys {
+  border-top: 1px solid var(--border);
+  padding-top: 1.25rem;
+  margin-bottom: 1.5rem;
+}
+.scoped-keys > h4 {
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+  color: var(--text-primary);
+}
+.new-key-reveal {
+  background: var(--bg-input);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 0.75rem;
+  margin-bottom: 1rem;
+}
+.new-key-reveal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  color: var(--accent);
+  margin-bottom: 0.5rem;
+}
+.new-key-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 1.25rem;
+}
+.new-key-origins {
+  width: 100%;
+  padding: 0.5rem;
+  font-size: 0.8rem;
+}
+.new-key-readonly {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.new-key-readonly input { width: auto; cursor: pointer; }
+.scoped-keys-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.scoped-key-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.scoped-key-row.revoked { opacity: 0.6; }
+.scoped-key-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+  flex: 1;
+}
+.scoped-key-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.scoped-key-masked {
+  font-family: "Fira Code", "Cascadia Code", monospace;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+.scoped-key-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+.key-tag {
+  font-size: 0.68rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+.key-tag.revoked {
+  color: #c0392b;
+  border-color: #c0392b;
+}
+.key-meta-muted {
+  font-size: 0.68rem;
+  color: var(--text-secondary);
+}
+
 .api-key-usage h4 {
   font-size: 0.85rem;
   font-weight: 600;

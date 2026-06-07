@@ -25,6 +25,8 @@ import {
   Key,
   RefreshCw,
   Check,
+  Plus as PlusIcon,
+  Ban,
 } from "lucide-react";
 
 interface Project {
@@ -58,6 +60,19 @@ interface TeamMember {
   status: string;
   userId?: { _id: string; name: string; email: string };
   invitedBy?: { name: string };
+}
+
+// A scoped SDK key as returned by GET /projects/:id/keys — always masked,
+// never the raw secret. The full secret is only seen once, at creation.
+interface ScopedKey {
+  id: string;
+  name: string;
+  maskedKey: string;
+  readOnly: boolean;
+  allowedOrigins: string[];
+  revoked: boolean;
+  lastUsedAt: string | null;
+  createdAt: string;
 }
 
 // Language code → display name mapping for South Asian languages.
@@ -111,9 +126,20 @@ export default function ProjectsPage() {
   const [inviteLink, setInviteLink] = useState<string | null>(null);
   const [teamLoading, setTeamLoading] = useState(false);
 
-  // API key state
+  // API key state (legacy single key)
   const [apiKeyCopied, setApiKeyCopied] = useState(false);
   const [regeneratingKey, setRegeneratingKey] = useState(false);
+
+  // Scoped API keys state
+  const [scopedKeys, setScopedKeys] = useState<ScopedKey[]>([]);
+  const [keysLoading, setKeysLoading] = useState(false);
+  const [newKeyName, setNewKeyName] = useState("");
+  const [newKeyOrigins, setNewKeyOrigins] = useState("");
+  const [newKeyReadOnly, setNewKeyReadOnly] = useState(true);
+  const [creatingKey, setCreatingKey] = useState(false);
+  // The full secret of a just-created key — shown ONCE, then dismissed.
+  const [createdSecret, setCreatedSecret] = useState<string | null>(null);
+  const [secretCopied, setSecretCopied] = useState(false);
 
   const { logout, userName } = useAuth();
   const navigate = useNavigate();
@@ -175,7 +201,14 @@ export default function ProjectsPage() {
     setInviteEmail("");
     setInviteRole("translator");
     setInviteLangs([]);
+    // Reset + load scoped keys for the API Key tab.
+    setScopedKeys([]);
+    setCreatedSecret(null);
+    setNewKeyName("");
+    setNewKeyOrigins("");
+    setNewKeyReadOnly(true);
     fetchTeam(project._id);
+    fetchScopedKeys(project._id);
   }
 
   async function saveSettings() {
@@ -267,6 +300,67 @@ export default function ProjectsPage() {
       alert(getErrorMessage(e));
     } finally {
       setRegeneratingKey(false);
+    }
+  }
+
+  // ─── Scoped API Keys ─────────────────────────────────────────
+  async function fetchScopedKeys(projectId: string) {
+    setKeysLoading(true);
+    try {
+      const res = await api.get(`/projects/${projectId}/keys`);
+      setScopedKeys(res.data.data);
+    } catch (e) {
+      console.error("Failed to fetch API keys:", getErrorMessage(e));
+    } finally {
+      setKeysLoading(false);
+    }
+  }
+
+  async function createScopedKey() {
+    if (!editingProject || !newKeyName.trim()) return;
+    setCreatingKey(true);
+    try {
+      // Split the comma/space/newline-separated origin allowlist into hosts;
+      // the server normalizes full URLs → bare hostnames.
+      const allowedOrigins = newKeyOrigins
+        .split(/[\s,]+/)
+        .map((o) => o.trim())
+        .filter(Boolean);
+      const res = await api.post(`/projects/${editingProject._id}/keys`, {
+        name: newKeyName.trim(),
+        allowedOrigins,
+        readOnly: newKeyReadOnly,
+      });
+      // Surface the full secret ONCE; the list view only ever shows it masked.
+      setCreatedSecret(res.data.data.key);
+      setSecretCopied(false);
+      setNewKeyName("");
+      setNewKeyOrigins("");
+      setNewKeyReadOnly(true);
+      fetchScopedKeys(editingProject._id);
+    } catch (e) {
+      alert(getErrorMessage(e));
+    } finally {
+      setCreatingKey(false);
+    }
+  }
+
+  async function revokeScopedKey(keyId: string) {
+    if (!editingProject) return;
+    if (!window.confirm("Revoke this key? Apps using it will stop working immediately.")) return;
+    try {
+      await api.post(`/projects/${editingProject._id}/keys/${keyId}/revoke`);
+      fetchScopedKeys(editingProject._id);
+    } catch (e) {
+      alert(getErrorMessage(e));
+    }
+  }
+
+  function copyCreatedSecret() {
+    if (createdSecret) {
+      navigator.clipboard.writeText(createdSecret);
+      setSecretCopied(true);
+      setTimeout(() => setSecretCopied(false), 2000);
     }
   }
 
@@ -477,6 +571,123 @@ export default function ProjectsPage() {
                       {regeneratingKey ? "Regenerating..." : "Regenerate Key"}
                     </button>
                   </div>
+
+                  {/* ─── Scoped, rotatable keys ──────────────────── */}
+                  <div className="scoped-keys">
+                    <h4>Scoped API Keys</h4>
+                    <p className="api-key-desc">
+                      Create additional keys you can revoke independently, lock to
+                      specific origins, and mark read-only — without rotating the key
+                      above. The full secret is shown only once at creation.
+                    </p>
+
+                    {/* One-time secret reveal after creation */}
+                    {createdSecret && (
+                      <div className="new-key-reveal">
+                        <div className="new-key-reveal-head">
+                          <span>New key — copy it now, it won't be shown again.</span>
+                          <button
+                            className="btn-icon"
+                            onClick={() => setCreatedSecret(null)}
+                            title="Dismiss"
+                          >
+                            <X size={14} />
+                          </button>
+                        </div>
+                        <div className="api-key-box">
+                          <code className="api-key-value">{createdSecret}</code>
+                          <button
+                            className="btn-icon"
+                            onClick={copyCreatedSecret}
+                            title="Copy key"
+                          >
+                            {secretCopied ? <Check size={14} /> : <Copy size={14} />}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Create form */}
+                    <div className="new-key-form">
+                      <div className="invite-row">
+                        <input
+                          type="text"
+                          value={newKeyName}
+                          onChange={(e) => setNewKeyName(e.target.value)}
+                          placeholder="Key name (e.g. Production web)"
+                          className="invite-email"
+                        />
+                        <button
+                          className="btn-primary btn-sm"
+                          onClick={createScopedKey}
+                          disabled={creatingKey || !newKeyName.trim()}
+                        >
+                          <PlusIcon size={14} />
+                          {creatingKey ? "Creating..." : "Create key"}
+                        </button>
+                      </div>
+                      <input
+                        type="text"
+                        value={newKeyOrigins}
+                        onChange={(e) => setNewKeyOrigins(e.target.value)}
+                        placeholder="Allowed origins (optional, comma-separated, e.g. app.example.com)"
+                        className="new-key-origins"
+                      />
+                      <label className="new-key-readonly">
+                        <input
+                          type="checkbox"
+                          checked={newKeyReadOnly}
+                          onChange={(e) => setNewKeyReadOnly(e.target.checked)}
+                        />
+                        Read-only
+                      </label>
+                    </div>
+
+                    {/* Keys list (masked) */}
+                    <div className="scoped-keys-list">
+                      {keysLoading ? (
+                        <p className="text-muted">Loading...</p>
+                      ) : scopedKeys.length === 0 ? (
+                        <p className="text-muted">No scoped keys yet.</p>
+                      ) : (
+                        scopedKeys.map((k) => (
+                          <div
+                            key={k.id}
+                            className={`scoped-key-row ${k.revoked ? "revoked" : ""}`}
+                          >
+                            <div className="scoped-key-info">
+                              <span className="scoped-key-name">{k.name}</span>
+                              <code className="scoped-key-masked">{k.maskedKey}</code>
+                              <div className="scoped-key-meta">
+                                {k.readOnly && <span className="key-tag">read-only</span>}
+                                {k.allowedOrigins.length > 0 && (
+                                  <span className="key-tag">
+                                    {k.allowedOrigins.join(", ")}
+                                  </span>
+                                )}
+                                {k.revoked && <span className="key-tag revoked">revoked</span>}
+                                <span className="key-meta-muted">
+                                  {k.lastUsedAt
+                                    ? `Last used ${new Date(k.lastUsedAt).toLocaleDateString()}`
+                                    : "Never used"}
+                                </span>
+                              </div>
+                            </div>
+                            {!k.revoked && (
+                              <button
+                                className="btn-icon-danger"
+                                onClick={() => revokeScopedKey(k.id)}
+                                title="Revoke key"
+                              >
+                                <Ban size={14} />
+                              </button>
+                            )}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
                   <div className="api-key-usage">
                     <h4>Quick Start</h4>
                     <pre className="code-block">{`npm install bhasha-js`}</pre>

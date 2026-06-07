@@ -11,6 +11,7 @@
 
 import { Router, Request, Response } from "express";
 import Project from "../models/Project";
+import ApiKey from "../models/ApiKey";
 import Translation from "../models/Translation";
 import { sendSuccess, sendError } from "../utils/response";
 import { coerceRegister, readValue, DEFAULT_REGISTER } from "../utils/registers";
@@ -19,8 +20,35 @@ import { canServe } from "../utils/compliance";
 const router = Router();
 
 /**
+ * Derive the request's origin hostname for the allowlist check. Browsers send
+ * `Origin` on cross-origin requests; we fall back to the `Referer` host. Both
+ * are absent on server-to-server calls (curl, SSR) — those return "" and are
+ * rejected by a non-empty allowlist (a scoped key is meant for the browser).
+ */
+function requestHostname(req: Request): string {
+  const candidates = [req.headers["origin"], req.headers["referer"]];
+  for (const raw of candidates) {
+    if (typeof raw !== "string" || !raw) continue;
+    try {
+      return new URL(raw).hostname.toLowerCase();
+    } catch {
+      // Not a parseable URL — ignore and try the next candidate.
+    }
+  }
+  return "";
+}
+
+/**
  * Middleware: extract project from API key.
  * Expects the key in the `x-api-key` header.
+ *
+ * Resolution order:
+ *  1) A NON-revoked scoped ApiKey matching the header. If it carries an
+ *     allowedOrigins allowlist, the request's Origin/Referer hostname must be
+ *     in it (else 403). lastUsedAt is bumped best-effort (fire-and-forget — it
+ *     never blocks or fails the request).
+ *  2) FALLBACK to the legacy single `Project.apiKey`, so every existing
+ *     project keeps working unchanged. Legacy keys carry no origin scope.
  */
 async function authenticateApiKey(req: Request, res: Response, next: Function) {
   const apiKey = req.headers["x-api-key"] as string;
@@ -30,6 +58,33 @@ async function authenticateApiKey(req: Request, res: Response, next: Function) {
   }
 
   try {
+    // 1) Scoped key path. Only non-revoked keys resolve.
+    const scoped = await ApiKey.findOne({ key: apiKey, revoked: false });
+    if (scoped) {
+      // Origin allowlist: only enforced when the key has one. An empty list
+      // means "any origin", preserving the legacy no-restriction behavior.
+      if (Array.isArray(scoped.allowedOrigins) && scoped.allowedOrigins.length > 0) {
+        const host = requestHostname(req);
+        if (!host || !scoped.allowedOrigins.includes(host)) {
+          return sendError(res, 403, "Origin not allowed for this API key");
+        }
+      }
+
+      const project = await Project.findById(scoped.projectId);
+      if (!project) {
+        // Key points at a deleted project — treat as invalid.
+        return sendError(res, 401, "Invalid API key");
+      }
+
+      // Best-effort usage timestamp — fire-and-forget so it never delays or
+      // fails the hot path. Errors are swallowed (it's telemetry, not auth).
+      ApiKey.updateOne({ _id: scoped._id }, { lastUsedAt: new Date() }).catch(() => {});
+
+      (req as any).project = project;
+      return next();
+    }
+
+    // 2) Legacy fallback — the project's own single apiKey field.
     const project = await Project.findOne({ apiKey });
     if (!project) {
       return sendError(res, 401, "Invalid API key");
