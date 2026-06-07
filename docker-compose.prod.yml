@@ -1,0 +1,43 @@
+# Production stack for BhashaJS (the GCP VM, behind Caddy).
+#
+# SOURCE OF TRUTH for what runs in production — the local-dev `docker-compose.yml`
+# (bundled Mongo + nginx + certbot) had drifted far from this. Differences:
+#   - NO bundled Mongo: production uses MongoDB Atlas (MONGO_CONNECTION_URL in .env).
+#   - NO nginx/certbot: Caddy runs on the HOST and reverse-proxies api.bhashajs.com
+#     to 127.0.0.1:5000 (Caddy terminates TLS).
+#   - AI runs on Vertex AI via a mounted, read-only service-account file.
+#   - The server binds to LOOPBACK only — never exposed publicly; Caddy is the
+#     single public entrypoint (it shares the VM with another app).
+#
+# Deploy (on the VM, with a sibling .env and ./credentials/sa.json present):
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# .env must provide: MONGO_CONNECTION_URL, JWT_SECRET (>=32 chars), CORS_ORIGIN,
+# GEMINI_USE_VERTEX=true, GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION, GEMINI_MODEL.
+
+services:
+  server:
+    build:
+      context: ./packages/server
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:5000:5000" # loopback only — Caddy is the public edge
+    volumes:
+      - ./credentials/sa.json:/app/credentials/sa.json:ro
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      GOOGLE_APPLICATION_CREDENTIALS: /app/credentials/sa.json
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

@@ -91,6 +91,25 @@ if (rawOrigin === "*") {
 }
 app.use(helmet());
 
+// Lightweight structured request log (one JSON line per request on finish).
+// Skips the health endpoint so uptime pings don't drown the logs.
+app.use((req, res, next) => {
+  if (req.path === "/api/health") return next();
+  const startedAt = Date.now();
+  res.on("finish", () => {
+    console.log(
+      JSON.stringify({
+        t: new Date().toISOString(),
+        method: req.method,
+        path: req.path,
+        status: res.statusCode,
+        ms: Date.now() - startedAt,
+      })
+    );
+  });
+  next();
+});
+
 // ─── Rate Limiting ───────────────────────────────────────────
 const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -142,8 +161,14 @@ app.use("/api/projects", (req, res, next) =>
 );
 
 // ─── Health check (before auth routes) ──────────────────────
+// Reflects real readiness (Mongo connectivity) so uptime monitors and the
+// Docker HEALTHCHECK detect a degraded server instead of a hardcoded "ok".
 app.get("/api/health", (req, res) => {
-  res.json({ success: true, data: { status: "ok" } });
+  const dbConnected = mongoose.connection.readyState === 1;
+  res.status(dbConnected ? 200 : 503).json({
+    success: dbConnected,
+    data: { status: dbConnected ? "ok" : "degraded", db: dbConnected ? "connected" : "disconnected" },
+  });
 });
 
 // ─── Public SDK routes (API key auth, no JWT) ───────────────
@@ -158,6 +183,21 @@ app.use("/api/notifications", notificationRoutes);
 app.use("/api/translations", commentRoutes);
 app.use("/api/projects/:projectId/glossary", glossaryRoutes);
 app.use("/api", packRoutes);
+
+// ─── Global error handler ───────────────────────────────────
+// Catch-all so a malformed JSON body or an error that escapes a route returns
+// the { success, message } contract instead of Express's default HTML page.
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (res.headersSent) return next(err);
+  const badJson = err?.type === "entity.parse.failed";
+  // Real errors are logged here. This is also the single hook to add an error
+  // tracker (e.g. Sentry.captureException(err)) when one is wired up.
+  if (!badJson) console.error("[BhashaJS] unhandled route error:", err?.message || err);
+  res.status(badJson ? 400 : 500).json({
+    success: false,
+    message: badJson ? "Invalid JSON body" : "Internal server error",
+  });
+});
 
 // ─── Migration: Ensure existing projects have owner membership ──
 async function migrateOwnerMemberships() {
@@ -206,14 +246,24 @@ async function start() {
     const metaDoc = await Meta.findOne({ key: "migrationVersion" });
     const ranVersion = typeof metaDoc?.value === "number" ? metaDoc.value : 0;
     if (ranVersion < MIGRATION_VERSION) {
-      console.log(`[Migration] running migrations (have v${ranVersion}, want v${MIGRATION_VERSION})`);
-      await migrateOwnerMemberships();
-      await migrateRegisters();
-      await Meta.findOneAndUpdate(
-        { key: "migrationVersion" },
-        { value: MIGRATION_VERSION, updatedAt: new Date() },
-        { upsert: true }
-      );
+      // Migrations mutate prod data (full-collection scans, index changes), so
+      // they only run when explicitly opted in — a deploy must not auto-apply a
+      // new migration unattended against an unbacked-up database.
+      if (process.env.RUN_MIGRATIONS === "true") {
+        console.log(`[Migration] running migrations (have v${ranVersion}, want v${MIGRATION_VERSION})`);
+        await migrateOwnerMemberships();
+        await migrateRegisters();
+        await Meta.findOneAndUpdate(
+          { key: "migrationVersion" },
+          { value: MIGRATION_VERSION, updatedAt: new Date() },
+          { upsert: true }
+        );
+      } else {
+        console.warn(
+          `[Migration] PENDING (have v${ranVersion}, want v${MIGRATION_VERSION}) but RUN_MIGRATIONS!=true — skipping. ` +
+            `Back up the DB, then set RUN_MIGRATIONS=true for one boot to apply.`
+        );
+      }
     }
     // Seeding vertical packs is small and idempotent — safe to run each boot.
     await seedVerticalPacks();
@@ -227,5 +277,16 @@ async function start() {
     process.exit(1);
   }
 }
+
+// Don't let an unhandled async error silently kill (or zombie) the process.
+process.on("unhandledRejection", (reason) => {
+  console.error("[BhashaJS] unhandledRejection:", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[BhashaJS] uncaughtException:", err);
+  // The process is in an undefined state — exit and let the container restart
+  // policy bring up a clean one.
+  process.exit(1);
+});
 
 start();

@@ -1,9 +1,21 @@
-version: "3.9"
+# LOCAL-DEV / SELF-HOST stack (bundled Mongo + nginx + certbot).
+# Production runs `docker-compose.prod.yml` (server-only, Atlas + Vertex, behind
+# Caddy) — see that file. Do NOT point production at this one.
+#
+# All services cap their JSON logs so a chatty container can't fill the disk
+# (a real incident here once hit 93% disk).
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
 
 services:
   mongo:
     image: mongo:7
     restart: unless-stopped
+    logging: *default-logging
     environment:
       MONGO_INITDB_ROOT_USERNAME: root
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-changeme}
@@ -16,6 +28,7 @@ services:
       context: ./packages/server
       dockerfile: Dockerfile
     restart: unless-stopped
+    logging: *default-logging
     depends_on:
       - mongo
     environment:
@@ -33,6 +46,7 @@ services:
       context: ./packages/dashboard
       dockerfile: Dockerfile
     restart: unless-stopped
+    logging: *default-logging
     depends_on:
       - server
     ports:

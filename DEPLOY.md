@@ -86,7 +86,18 @@ GEMINI_MODEL=gemini-2.5-flash
 CORS_ORIGIN=*
 ```
 
-`docker-compose.yml` — server only, bound to localhost, SA key mounted read-only:
+The repo ships a tracked, canonical prod compose at **`docker-compose.prod.yml`**
+(server-only, loopback bind, Atlas + Vertex, `HEALTHCHECK`, capped logs). It uses
+`context: ./packages/server`, so run it from a full repo checkout on the VM with
+`.env` + `credentials/sa.json` at the repo root:
+```bash
+docker compose -f docker-compose.prod.yml up -d --build
+```
+**Make sure `./credentials/sa.json` exists as a FILE before `up`** — otherwise the
+bind mount silently creates a *directory* and Vertex auth fails at call time.
+
+The minimal `~/bhashajs/` layout below mirrors that file for a non-repo checkout
+(`build: ./server`, with `.env` + `credentials/` as siblings):
 ```yaml
 services:
   server:
@@ -97,6 +108,15 @@ services:
       - "127.0.0.1:5000:5000"
     volumes:
       - ./credentials/sa.json:/app/credentials/sa.json:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
 ```
 
 ### Build, run, and proxy
@@ -205,7 +225,9 @@ For the GCP backend: redeploy is manual — copy the updated `packages/server` t
 ## 7. Recommended next-day items (post-launch)
 
 - **Atlas IP whitelist**: lock down `0.0.0.0/0` to the GCP VM's public IP (reserve a static external IP for the VM so it doesn't change).
-- **MongoDB backups**: enable Atlas continuous backup on the free tier or schedule a daily `mongodump`.
+- **MongoDB backups**: enable Atlas continuous backup, or schedule `scripts/backup.sh` daily via cron (`mongodump --archive --gzip`, keeps the newest 14 — needs `mongodb-database-tools` on the host).
+- **Uptime + alerting**: point UptimeRobot / Better Stack at `https://api.bhashajs.com/api/health` (returns 503 when Mongo is down). The container `HEALTHCHECK` auto-restarts a degraded server, but only an external monitor pages *you*.
+- **Migrations**: schema migrations don't auto-run anymore — back up, then set `RUN_MIGRATIONS=true` for one boot to apply a pending one.
 - **Vercel analytics**: free tier gives basic traffic data — turn it on for both Vercel projects.
 - **Plausible / Fathom on the marketing site**: privacy-friendly analytics, ~$9/mo.
 - **NPM badges**: once the package has a few weekly downloads, the README badges (already in place) show momentum.
