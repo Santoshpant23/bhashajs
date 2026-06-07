@@ -465,13 +465,19 @@ export default function TranslationEditor() {
     }
   }
 
-  async function fetchTranslations(pageNum = 1, append = false) {
+  // `searchOverride` lets callers pass the CURRENT input value directly. The
+  // debounced search handler must use it because the `searchQuery` state read
+  // from this closure is the value from the render that scheduled the timeout —
+  // i.e. the PREVIOUS query — so without the override a search runs one keystroke
+  // behind. When omitted we fall back to the `searchQuery` state (normal paging).
+  async function fetchTranslations(pageNum = 1, append = false, searchOverride?: string) {
     try {
       const params = new URLSearchParams({
         page: String(pageNum),
         limit: "50",
       });
-      if (searchQuery) params.set("search", searchQuery);
+      const search = searchOverride !== undefined ? searchOverride : searchQuery;
+      if (search) params.set("search", search);
       const res = await api.get(`/translations/${projectId}?${params}`);
       const { data: items, pagination: pag } = res.data.data;
       if (append) {
@@ -1313,6 +1319,10 @@ export default function TranslationEditor() {
   // Filter translations by search query + status + language. All checks operate
   // on the active register (so "untranslated" in casual mode means
   // "casual variant missing", not "default missing").
+  //
+  // KNOWN LIMITATION (out of scope): status filters and the missing-counts only
+  // inspect the currently-loaded page of translations, not the whole project.
+  // Proper status filtering would need server-side support; not done here.
   const filtered = translations.filter((t) => {
     // Text search — also walks across registers so a known phrase finds its key
     // even if the user is currently viewing a different register.
@@ -1727,7 +1737,10 @@ export default function TranslationEditor() {
                 clearTimeout(searchDebounceRef.current);
                 searchDebounceRef.current = setTimeout(() => {
                   setCurrentPage(1);
-                  fetchTranslations(1, false);
+                  // Pass the CURRENT input value explicitly — the `searchQuery`
+                  // state captured in fetchTranslations' closure is the previous
+                  // term, so without this the query would lag one keystroke.
+                  fetchTranslations(1, false, val);
                 }, 300);
               }}
             />
@@ -2451,7 +2464,18 @@ export default function TranslationEditor() {
                               value={cellValue}
                               onChange={(e) => handleValueChange(t._id, lang, e.target.value)}
                               onFocus={() => handleCellFocus(t._id, lang, cellValue)}
-                              onBlur={() => { saveTranslation(t, lang); setCellFocused(false); }}
+                              onBlur={(e) => {
+                                // Only persist when the value ACTUALLY changed since
+                                // focus. Saving unconditionally would PUT on every blur
+                                // and stamp the cell source "human" — silently
+                                // overwriting AI/approved/pending provenance just
+                                // because the user clicked into and out of the cell.
+                                const original = originalValueRef.current[`${t._id}:${lang}`] ?? "";
+                                if (e.target.value !== original) {
+                                  saveTranslation(t, lang);
+                                }
+                                setCellFocused(false);
+                              }}
                               onKeyDown={(e) => handleCellKeyDown(e, t, lang)}
                               placeholder={`${LANG_NAMES[lang] || lang}...`}
                               dir={RTL_LANGS.has(lang) ? "rtl" : "ltr"}

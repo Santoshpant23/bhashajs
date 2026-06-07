@@ -41,8 +41,10 @@ echo ">>> Waiting for nginx to accept connections..."
 sleep 5
 
 # ── Step 2: Obtain the certificate over HTTP ─────────────────
+# --entrypoint certbot overrides the service's renew-loop entrypoint so this
+# one-off `certonly` actually runs (otherwise the args are swallowed by the loop).
 echo ">>> Step 2/3: Requesting SSL certificate from Let's Encrypt..."
-docker compose run --rm certbot certonly \
+docker compose run --rm --entrypoint certbot certbot certonly \
   --webroot \
   --webroot-path=/var/www/certbot \
   --email "$EMAIL" \

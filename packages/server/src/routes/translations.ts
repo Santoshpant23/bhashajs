@@ -46,7 +46,7 @@ import {
 import { isValidRegister, REGISTERS } from "../models/Translation";
 import { resolveWriteSource } from "../utils/compliance";
 import { withTransactionOrFallback } from "../utils/transaction";
-import { wouldExceedCap, recordUsage, getUsage } from "../utils/usage";
+import { reserveUsage, refundUsage, getUsage } from "../utils/usage";
 
 // Escape user input destined for a Mongo $regex so it's matched as a literal
 // substring. Without this, a crafted pattern like "(a+)+$" forces catastrophic
@@ -773,13 +773,13 @@ router.post(
       }
 
       // ─── Monthly AI cap (BEFORE any AI call) ──────────────────────────────
-      // Enforce the per-project credit cap against this month's keysTranslated
-      // so a single project can't run up the model bill. This check must run
-      // before getAIProvider().translate() — the test suite relies on a 429
-      // coming back with NO AI call made. We count the candidate set; the
-      // actual recorded usage below is the (possibly smaller) #keys written.
+      // Atomically RESERVE the candidate keys against the per-project credit cap
+      // so a single project can't run up the model bill — and so two concurrent
+      // requests can't both pass a check-then-record gate. Must run before
+      // getAIProvider().translate() (the test suite relies on a 429 with NO AI
+      // call). Keys that ultimately fail are refunded below.
       const cap = (project as any).aiMonthlyCap as number;
-      if (await wouldExceedCap(projectId as string, cap, toTranslate.length)) {
+      if (!(await reserveUsage(projectId as string, cap, toTranslate.length))) {
         const { keysTranslated } = await getUsage(projectId as string);
         return sendError(
           res,
@@ -788,16 +788,19 @@ router.post(
         );
       }
 
-      // Cancel in-flight AI work if the client disconnects. @google/genai v2.7
-      // honors config.abortSignal, so this aborts the upstream fetch rather
-      // than abandoning it. We mark `aborted` to skip the DB writes below.
+      // Cancel in-flight AI work only if the CLIENT actually disconnects.
+      // NOTE: `req.on("close")` also fires on normal request-body completion, so
+      // using it would abort every request. The reliable signal is the RESPONSE
+      // stream closing before we've finished writing it (res.writableEnded).
+      // @google/genai v2.7 honors config.abortSignal → aborts the upstream fetch.
       const controller = new AbortController();
       let aborted = false;
       const onClose = () => {
+        if (res.writableEnded) return; // normal completion, not a disconnect
         aborted = true;
         controller.abort();
       };
-      req.on("close", onClose);
+      res.on("close", onClose);
 
       const langNames: Record<string, string> = {
         hi: "Hindi", bn: "Bengali", ur: "Urdu", ta: "Tamil", te: "Telugu",
@@ -908,10 +911,13 @@ router.post(
         .filter((t) => !aiResults[t.key])
         .map((t) => t.key);
 
-      // Meter the usage. Only the keys actually WRITTEN count toward the cap
-      // (failedKeys are not double-counted). `calls: 1` tracks the AI request.
-      req.off("close", onClose);
-      await recordUsage(projectId as string, { keys: translatedKeys.length, calls: 1 });
+      // Refund the reserved keys that weren't actually written (failed batches,
+      // script-guard drops, or a client abort) so only real work counts.
+      res.off("close", onClose);
+      const unusedKeys = aborted
+        ? toTranslate.length
+        : toTranslate.length - translatedKeys.length;
+      if (unusedKeys > 0) await refundUsage(projectId as string, unusedKeys);
 
       return sendSuccess(res, 200, {
         message:
@@ -1213,10 +1219,11 @@ router.post(
       }
 
       // ─── Monthly AI cap (BEFORE any AI call) ──────────────────────────────
-      // Voice generation hits the same model bill, so it's capped on the same
-      // monthly keysTranslated budget. Count the voice candidate set.
+      // Voice hits the same model bill, so it RESERVES against the same monthly
+      // keysTranslated budget (atomically) — repeated voice generation now
+      // actually consumes the cap it's checked against.
       const voiceCap = (project as any).aiMonthlyCap as number;
-      if (await wouldExceedCap(projectId as string, voiceCap, candidates.length)) {
+      if (!(await reserveUsage(projectId as string, voiceCap, candidates.length, true))) {
         const { keysTranslated } = await getUsage(projectId as string);
         return sendError(
           res,
@@ -1225,14 +1232,16 @@ router.post(
         );
       }
 
-      // Cancel in-flight AI work on client disconnect (see /ai-translate).
+      // Cancel in-flight AI work on a real client disconnect (see /ai-translate
+      // for why this is res.on("close") + writableEnded, not req.on("close")).
       const controller = new AbortController();
       let aborted = false;
       const onClose = () => {
+        if (res.writableEnded) return; // normal completion, not a disconnect
         aborted = true;
         controller.abort();
       };
-      req.on("close", onClose);
+      res.on("close", onClose);
 
       const langNames: Record<string, string> = {
         hi: "Hindi", bn: "Bengali", ur: "Urdu", ta: "Tamil", te: "Telugu",
@@ -1281,9 +1290,12 @@ router.post(
         generatedKeys.push(t.key);
       }
 
-      // Meter voice usage — only the cells actually generated count.
-      req.off("close", onClose);
-      await recordUsage(projectId as string, { voice: generatedKeys.length, calls: 1 });
+      // Refund the reserved cells that weren't generated (failures / abort).
+      res.off("close", onClose);
+      const unusedVoice = aborted
+        ? candidates.length
+        : candidates.length - generatedKeys.length;
+      if (unusedVoice > 0) await refundUsage(projectId as string, unusedVoice, true);
 
       return sendSuccess(res, 200, {
         message: `Generated voice data for ${generatedKeys.length} key(s) in ${langName} (${register})`,

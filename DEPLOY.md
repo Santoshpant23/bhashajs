@@ -10,7 +10,7 @@ Plus your existing **MongoDB Atlas** stays where it is.
 
 ---
 
-## 0. Before anything: publish `bhasha-js@0.3.0` to npm
+## 0. Before anything: publish `bhasha-js@0.4.0` to npm
 
 ```bash
 cd packages/sdk
@@ -25,7 +25,7 @@ npm publish
 Verify:
 ```bash
 npm view bhasha-js version
-# Should show 0.3.0
+# Should show 0.4.0
 ```
 
 ---

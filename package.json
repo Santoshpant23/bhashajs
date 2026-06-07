@@ -21,6 +21,7 @@
   "workspaces": [
     "packages/sdk",
     "packages/server",
-    "packages/dashboard"
+    "packages/dashboard",
+    "packages/landing"
   ]
 }

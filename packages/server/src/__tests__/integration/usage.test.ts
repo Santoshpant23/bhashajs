@@ -20,11 +20,37 @@ import {
   currentPeriod,
   getUsage,
   recordUsage,
+  reserveUsage,
+  refundUsage,
   wouldExceedCap,
 } from "../../utils/usage";
 
 describe("usage helper (DB-backed)", () => {
   useIntegrationServer();
+
+  it("reserveUsage atomically enforces the cap (and voice consumes the keys budget)", async () => {
+    const projectId = new mongoose.Types.ObjectId();
+    // Within cap → reserved, keysTranslated incremented.
+    expect(await reserveUsage(projectId, 100, 40)).toBe(true);
+    expect((await getUsage(projectId)).keysTranslated).toBe(40);
+    // Would exceed (40 + 70 > 100) → rejected, NOT applied.
+    expect(await reserveUsage(projectId, 100, 70)).toBe(false);
+    expect((await getUsage(projectId)).keysTranslated).toBe(40);
+    // Voice reserves against the SAME keysTranslated budget (the bug was it didn't).
+    expect(await reserveUsage(projectId, 100, 30, true)).toBe(true);
+    const after = await getUsage(projectId);
+    expect(after.keysTranslated).toBe(70);
+    expect(after.voiceCalls).toBe(30);
+    // Refund returns budget for failed/aborted work.
+    await refundUsage(projectId, 10);
+    expect((await getUsage(projectId)).keysTranslated).toBe(60);
+  });
+
+  it("reserveUsage with a non-positive cap means no cap", async () => {
+    const projectId = new mongoose.Types.ObjectId();
+    expect(await reserveUsage(projectId, 0, 9999)).toBe(true);
+    expect((await getUsage(projectId)).keysTranslated).toBe(9999);
+  });
 
   it("getUsage returns zeros when nothing recorded", async () => {
     const projectId = new mongoose.Types.ObjectId();

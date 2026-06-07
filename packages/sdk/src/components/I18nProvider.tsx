@@ -84,12 +84,19 @@ export function I18nProvider({
   // useRef to hold the client so it persists across renders
   const clientRef = useRef<TranslationClient | null>(null);
 
-  // Monotonic request ids so a slow earlier fetch can't overwrite the state
-  // committed by a newer switch (last-*requested* wins, not last-*resolved*).
-  // Language and register are independent dimensions, so each gets its own
-  // counter — switching language then register must let both commit.
-  const langReqRef = useRef(0);
-  const registerReqRef = useRef(0);
+  // A (lang, register) pair is ONE atomic locale target. Tracking the two
+  // dimensions with separate request counters let an interleaved
+  // setLang("hi") + setRegister("formal") commit the final "hi/formal" state
+  // while each call only fetched the pair it could *see* at call time
+  // ("hi/default" and "en/formal") — so the committed "hi/formal" bundle was
+  // never loaded. We keep a single shared counter plus a pending target that
+  // every switch writes BEFORE fetching; applyLocale() fetches the CURRENT
+  // pending pair and, if still the latest request, commits both dimensions
+  // together. Last-requested wins. Pending lives in refs (not state) so a
+  // switch reads the latest target synchronously, without a re-render.
+  const localeReqRef = useRef(0);
+  const pendingLangRef = useRef(defaultLang);
+  const pendingRegisterRef = useRef<Register>(initialResolvedRegister);
 
   // Create the client once on mount
   if (!clientRef.current) {
@@ -160,128 +167,113 @@ export function I18nProvider({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]); // Re-init only if projectId changes
 
+  // ─── Atomic locale switching ─────────────────────────────────
+  // (lang, register) is ONE locale target. Every switch updates the pending
+  // refs first, then applyLocale() snapshots the CURRENT pending pair, fetches
+  // THAT exact bundle (+ English / default-register fallbacks + voice), and —
+  // guarded by the single shared counter — commits BOTH dimensions together.
+  // Snapshotting the pending target (not currentLang/currentRegister) is what
+  // makes an interleaved setLang+setRegister fetch the real final pair instead
+  // of a stale half-state. Mirrors BhashaStore.applyLocale exactly.
+
+  const applyLocale = useCallback(async () => {
+    const reqId = ++localeReqRef.current;
+    const targetLang = pendingLangRef.current;
+    const targetRegister = pendingRegisterRef.current;
+
+    setIsLoading(true);
+    setError(null);
+    try {
+      await client.fetchTranslations(targetLang, targetRegister);
+      // English fallback (default register only — English has no formal/casual).
+      if (targetLang !== "en") {
+        await client.fetchTranslations("en", DEFAULT_REGISTER);
+      }
+      // Pre-warm default register for register-fallback if needed.
+      if (targetRegister !== DEFAULT_REGISTER) {
+        await client.fetchTranslations(targetLang, DEFAULT_REGISTER);
+      }
+      // Voice mode: keep the IPA/SSML bundle in sync with the active locale.
+      // Without this, formatPhonetic/formatSSML return empty strings for every
+      // key after a switch until the next remount.
+      if (voiceEnabled) {
+        await client.fetchVoice(targetLang, targetRegister);
+        if (targetRegister !== DEFAULT_REGISTER) {
+          await client.fetchVoice(targetLang, DEFAULT_REGISTER);
+        }
+      }
+    } catch (e: any) {
+      // A failed switch must surface an error and clear loading rather than
+      // wedge isLoading:true forever. If a newer switch superseded us, let it
+      // own the final state.
+      if (reqId !== localeReqRef.current) return;
+      // Roll the pending target back to the committed locale so an identical
+      // retry isn't short-circuited by the equality guard in the setters.
+      pendingLangRef.current = currentLang;
+      pendingRegisterRef.current = currentRegister;
+      setIsLoading(false);
+      setError(e?.message || `Failed to load locale "${targetLang}/${targetRegister}"`);
+      console.error("[BhashaJS] setLocale error:", e);
+      return;
+    }
+
+    // A newer switch superseded this one while we were fetching — let it own
+    // the loading state and the committed locale. Bailing here is what stops a
+    // slow earlier fetch from clobbering a newer selection.
+    if (reqId !== localeReqRef.current) return;
+
+    setIsLoading(false);
+
+    const langChanged = targetLang !== currentLang;
+    if (langChanged) {
+      loadFontForLang(targetLang);
+      applyLangToDocument(targetLang);
+    }
+    setCurrentLang(targetLang);
+    setCurrentRegister(targetRegister);
+
+    if (langChanged) onLanguageChange?.(targetLang);
+  }, [currentLang, currentRegister, client, voiceEnabled, onLanguageChange]);
+
   // ─── Language Switching ──────────────────────────────────────
 
   const setLang = useCallback(
     async (newLang: string) => {
-      if (newLang === currentLang) return;
-
-      const reqId = ++langReqRef.current;
-      setIsLoading(true);
-      setError(null);
-      try {
-        await client.fetchTranslations(newLang, currentRegister);
-        // Pre-warm default register for register-fallback if needed.
-        if (currentRegister !== DEFAULT_REGISTER) {
-          await client.fetchTranslations(newLang, DEFAULT_REGISTER);
-        }
-        // Voice mode: keep the IPA/SSML bundle in sync with the active language.
-        // Without this, formatPhonetic/formatSSML would return empty strings for
-        // every key after a language switch until the next remount.
-        if (voiceEnabled) {
-          await client.fetchVoice(newLang, currentRegister);
-          if (currentRegister !== DEFAULT_REGISTER) {
-            await client.fetchVoice(newLang, DEFAULT_REGISTER);
-          }
-        }
-      } catch (e: any) {
-        // A failed switch must surface an error and clear loading rather than
-        // wedge isLoading:true forever. If a newer switch superseded us, let it
-        // own the final state.
-        if (reqId !== langReqRef.current) return;
-        setIsLoading(false);
-        setError(e?.message || `Failed to load language "${newLang}"`);
-        console.error("[BhashaJS] setLang error:", e);
-        return;
-      }
-
-      // A newer setLang superseded this one while we were fetching — let it
-      // own the loading state and the committed language. Bailing here is what
-      // stops a slow "hi" fetch from clobbering a newer "bn" selection.
-      if (reqId !== langReqRef.current) return;
-
-      setIsLoading(false);
-
-      loadFontForLang(newLang);
-      applyLangToDocument(newLang);
-      setCurrentLang(newLang);
-
-      onLanguageChange?.(newLang);
+      if (newLang === pendingLangRef.current) return;
+      pendingLangRef.current = newLang;
+      await applyLocale();
     },
-    [currentLang, currentRegister, client, voiceEnabled, onLanguageChange]
+    [applyLocale]
   );
 
   // ─── Register Switching ──────────────────────────────────────
 
   const setRegister = useCallback(
     async (newRegister: Register) => {
-      if (newRegister === currentRegister) return;
-
-      const reqId = ++registerReqRef.current;
-      // Fetch the new register bundle for the current lang (and English
-      // fallback) so the switch is instant once the network round-trips.
-      setIsLoading(true);
-      setError(null);
-      try {
-        await client.fetchTranslations(currentLang, newRegister);
-        // Voice bundle has to follow the register the same way text does.
-        if (voiceEnabled) {
-          await client.fetchVoice(currentLang, newRegister);
-        }
-      } catch (e: any) {
-        if (reqId !== registerReqRef.current) return;
-        setIsLoading(false);
-        setError(e?.message || `Failed to load register "${newRegister}"`);
-        console.error("[BhashaJS] setRegister error:", e);
-        return;
-      }
-
-      // Superseded by a newer register/segment switch — don't commit stale state.
-      if (reqId !== registerReqRef.current) return;
-
-      setIsLoading(false);
-
-      setCurrentRegister(newRegister);
+      if (newRegister === pendingRegisterRef.current) return;
+      pendingRegisterRef.current = newRegister;
+      await applyLocale();
     },
-    [currentLang, currentRegister, client, voiceEnabled]
+    [applyLocale]
   );
 
   // ─── Segment Switching ───────────────────────────────────────
   // Setting a segment that maps to a register (via segmentRules) flips both
-  // the segment and the register and pre-fetches the new bundle. Setting a
-  // segment that ISN'T in the rules just records the segment label — the
-  // register stays as it was. This lets apps record analytics-only segments
-  // without forcing a register change.
+  // the segment and the register (through the same atomic locale path) and
+  // pre-fetches the new bundle. Setting a segment that ISN'T in the rules just
+  // records the segment label — the register stays as it was. This lets apps
+  // record analytics-only segments without forcing a register change.
 
   const setSegment = useCallback(
     async (newSegment: string) => {
       setCurrentSegment(newSegment);
       const mapped = segmentRules?.[newSegment];
-      if (mapped && mapped !== currentRegister) {
-        const reqId = ++registerReqRef.current;
-        setIsLoading(true);
-        setError(null);
-        try {
-          await client.fetchTranslations(currentLang, mapped);
-          if (voiceEnabled) {
-            await client.fetchVoice(currentLang, mapped);
-          }
-        } catch (e: any) {
-          if (reqId !== registerReqRef.current) return;
-          setIsLoading(false);
-          setError(e?.message || `Failed to load register "${mapped}"`);
-          console.error("[BhashaJS] setSegment error:", e);
-          return;
-        }
-
-        // Superseded by a newer register/segment switch — don't commit stale state.
-        if (reqId !== registerReqRef.current) return;
-
-        setIsLoading(false);
-        setCurrentRegister(mapped);
+      if (mapped && mapped !== pendingRegisterRef.current) {
+        pendingRegisterRef.current = mapped;
+        await applyLocale();
       }
     },
-    [currentLang, currentRegister, client, voiceEnabled, segmentRules]
+    [segmentRules, applyLocale]
   );
 
   // ─── The t() function ────────────────────────────────────────

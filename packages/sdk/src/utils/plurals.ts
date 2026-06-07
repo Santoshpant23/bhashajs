@@ -76,12 +76,30 @@ export function getPluralCategory(
   const n = Math.abs(count);
   const base = baseLangForPlurals(lang);
 
-  if (ZERO_AND_ONE_SINGULAR.has(base)) {
-    // Group A: 0 and 1 are singular
-    return n >= 0 && n <= 1 ? "one" : "other";
+  // DELIBERATE MOAT OVERRIDE — South Asian "0-as-singular".
+  // For the Group-A languages, 0 is grammatically singular ("0 आइटम"),
+  // even where CLDR/Intl classifies it "other" (e.g. Marathi). This is the
+  // one intentional divergence from Intl.PluralRules and is allow-listed in
+  // cldr-plural.test.ts. It only applies to an EXACT zero — non-zero counts
+  // (including decimals like 0.5) defer to CLDR below.
+  if (ZERO_AND_ONE_SINGULAR.has(base) && n === 0) {
+    return "one";
   }
 
-  // Group B (English, Urdu, Tamil, Telugu, Malayalam, Nepali, and any unknown):
-  // Only 1 is singular
-  return n === 1 ? "one" : "other";
+  // Everything else defers to the platform's CLDR data via Intl.PluralRules,
+  // which is correct for decimals (e.g. Sinhala/Punjabi 0.5 → "other",
+  // Marathi 0.5 → "other") where the old hand-rolled table diverged. The SDK
+  // only models "one"/"other", so we collapse Intl's category accordingly
+  // (Intl "one" → "one"; "zero"/"two"/"few"/"many"/"other" → "other").
+  try {
+    return new Intl.PluralRules(base).select(n) === "one" ? "one" : "other";
+  } catch {
+    // Unknown/unsupported locale — fall back to the old hand rule. Group-A
+    // bases already returned above for n === 0, so here Group A keeps 1 as
+    // singular and Group B keeps only 1 as singular.
+    if (ZERO_AND_ONE_SINGULAR.has(base)) {
+      return n <= 1 ? "one" : "other";
+    }
+    return n === 1 ? "one" : "other";
+  }
 }

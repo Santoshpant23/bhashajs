@@ -82,10 +82,18 @@ export class BhashaStore {
   private applyDocument: boolean;
   private onLanguageChange?: (lang: string) => void;
 
-  // Per-dimension request ids so a slow earlier fetch can't overwrite a newer
-  // switch (last-requested wins) — the same guard the React provider uses.
-  private langReq = 0;
-  private registerReq = 0;
+  // A (lang, register) pair is ONE atomic locale target. Tracking the two
+  // dimensions with separate request counters let an interleaved
+  // setLang("hi") + setRegister("formal") commit the final state "hi/formal"
+  // while each call only ever fetched the pair it could *see* at call time
+  // ("hi/default" and "en/formal") — so the actually-committed "hi/formal"
+  // bundle was never loaded. We instead keep a single shared counter plus a
+  // pending target every switch writes BEFORE fetching; applyLocale() fetches
+  // the CURRENT pending pair and, if still the latest request, commits both
+  // dimensions together. Last-requested wins.
+  private localeReq = 0;
+  private pendingLang: string;
+  private pendingRegister: Register;
 
   constructor(config: BhashaConfig & { applyDocument?: boolean } = {}) {
     const {
@@ -112,14 +120,20 @@ export class BhashaStore {
     this.applyDocument = applyDocument;
     this.onLanguageChange = onLanguageChange;
 
+    const initialRegister = resolveInitialRegister(config);
     this.state = {
       lang: defaultLang,
-      register: resolveInitialRegister(config),
+      register: initialRegister,
       supportedLangs: preloadedTranslations ? Object.keys(preloadedTranslations) : [],
       isLoading: true,
       error: null,
       segment: userSegment,
     };
+
+    // The pending target starts equal to the committed locale; each switch
+    // updates it before driving applyLocale().
+    this.pendingLang = defaultLang;
+    this.pendingRegister = initialRegister;
 
     if (preloadedTranslations) {
       this.client.setSupportedLangs(this.state.supportedLangs);
@@ -197,21 +211,36 @@ export class BhashaStore {
     return this.client.translate(key as string, this.state.lang, this.state.register, params);
   }
 
-  /** Switch language. Fetches the bundle, then commits if still the latest. */
-  async setLang(newLang: string): Promise<void> {
-    if (newLang === this.state.lang) return;
-    const reqId = ++this.langReq;
+  /**
+   * Fetch and commit the CURRENT pending (lang, register) target atomically.
+   *
+   * Every switch sets `pendingLang`/`pendingRegister` first, then calls this.
+   * We snapshot the pending pair, fetch THAT exact bundle (+ the English and
+   * default-register fallbacks + voice), and — guarded by the single shared
+   * counter — commit both dimensions together. Because the snapshot is taken
+   * from the pending target (not committed state), an interleaved
+   * setLang+setRegister fetches the real final pair, never a stale half-state.
+   * Last-requested wins; superseded requests bail without touching state.
+   */
+  private async applyLocale(): Promise<void> {
+    const reqId = ++this.localeReq;
+    const targetLang = this.pendingLang;
+    const targetRegister = this.pendingRegister;
+
     this.emit({ isLoading: true, error: null });
 
     try {
-      await this.client.fetchTranslations(newLang, this.state.register);
-      if (this.state.register !== DEFAULT_REGISTER) {
-        await this.client.fetchTranslations(newLang, DEFAULT_REGISTER);
+      await this.client.fetchTranslations(targetLang, targetRegister);
+      if (targetLang !== "en") {
+        await this.client.fetchTranslations("en", DEFAULT_REGISTER);
+      }
+      if (targetRegister !== DEFAULT_REGISTER) {
+        await this.client.fetchTranslations(targetLang, DEFAULT_REGISTER);
       }
       if (this.voiceEnabled) {
-        await this.client.fetchVoice(newLang, this.state.register);
-        if (this.state.register !== DEFAULT_REGISTER) {
-          await this.client.fetchVoice(newLang, DEFAULT_REGISTER);
+        await this.client.fetchVoice(targetLang, targetRegister);
+        if (targetRegister !== DEFAULT_REGISTER) {
+          await this.client.fetchVoice(targetLang, DEFAULT_REGISTER);
         }
       }
     } catch (e: any) {
@@ -219,44 +248,49 @@ export class BhashaStore {
       // wedging isLoading:true forever (and it must not reject — these are
       // commonly called un-awaited). If a newer switch superseded us, let it
       // own the final state.
-      if (reqId !== this.langReq) return;
-      this.emit({ isLoading: false, error: e?.message || `Failed to load language "${newLang}"` });
+      if (reqId !== this.localeReq) return;
+      // Roll the pending target back to the committed locale so an identical
+      // retry isn't short-circuited by the equality guard in the setters.
+      this.pendingLang = this.state.lang;
+      this.pendingRegister = this.state.register;
+      this.emit({
+        isLoading: false,
+        error: e?.message || `Failed to load locale "${targetLang}/${targetRegister}"`,
+      });
       return;
     }
 
-    if (reqId !== this.langReq) return; // superseded by a newer setLang
-    if (this.applyDocument) {
-      loadFontForLang(newLang);
-      applyLangToDocument(newLang);
+    if (reqId !== this.localeReq) return; // superseded by a newer switch
+
+    const langChanged = targetLang !== this.state.lang;
+    if (this.applyDocument && langChanged) {
+      loadFontForLang(targetLang);
+      applyLangToDocument(targetLang);
     }
-    this.emit({ lang: newLang, isLoading: false, error: null });
-    this.onLanguageChange?.(newLang);
+    this.emit({ lang: targetLang, register: targetRegister, isLoading: false, error: null });
+    if (langChanged) this.onLanguageChange?.(targetLang);
   }
 
-  /** Switch register. */
+  /** Switch language. Updates the pending target, then applies the locale. */
+  async setLang(newLang: string): Promise<void> {
+    if (newLang === this.pendingLang) return;
+    this.pendingLang = newLang;
+    await this.applyLocale();
+  }
+
+  /** Switch register. Updates the pending target, then applies the locale. */
   async setRegister(newRegister: Register): Promise<void> {
-    if (newRegister === this.state.register) return;
-    const reqId = ++this.registerReq;
-    this.emit({ isLoading: true, error: null });
-
-    try {
-      await this.client.fetchTranslations(this.state.lang, newRegister);
-      if (this.voiceEnabled) await this.client.fetchVoice(this.state.lang, newRegister);
-    } catch (e: any) {
-      if (reqId !== this.registerReq) return;
-      this.emit({ isLoading: false, error: e?.message || `Failed to load register "${newRegister}"` });
-      return;
-    }
-
-    if (reqId !== this.registerReq) return;
-    this.emit({ register: newRegister, isLoading: false, error: null });
+    if (newRegister === this.pendingRegister) return;
+    this.pendingRegister = newRegister;
+    await this.applyLocale();
   }
 
-  /** Set the user segment; flips register if a segmentRule matches. */
+  /** Set the user segment; flips register (via the same atomic path) if a
+   *  segmentRule matches. */
   async setSegment(newSegment: string): Promise<void> {
     this.emit({ segment: newSegment });
     const mapped = this.segmentRules?.[newSegment];
-    if (mapped && mapped !== this.state.register) {
+    if (mapped && mapped !== this.pendingRegister) {
       await this.setRegister(mapped);
     }
   }

@@ -2,8 +2,19 @@
 //
 // A demo page that uses the BhashaJS SDK to prove it works.
 // This simulates what a REAL developer would do in THEIR app.
+//
+// The demo is ENTIRELY BUNDLED and instant: every string it renders ships in
+// the `DEMO_TRANSLATIONS` object below and is handed to the SDK via
+// `<I18nProvider preloadedTranslations={...}>`. There is NO network call, NO
+// "spinning up a sandbox", and NO database write — the demo never mints a
+// project just to show off the SDK. The `/api/sandbox` endpoint still exists on
+// the server (it's a separate "try it without signup" feature), but /demo does
+// not call it.
+//
+// OPTIONAL LIVE MODE: set VITE_DEMO_PROJECT_KEY to a PUBLIC project key (starts
+// with "bjs_") and the page drives the SDK against the live API instead. This is
+// strictly opt-in; the DEFAULT is the bundled, always-correct demo.
 
-import { useEffect, useState, type ReactNode } from "react";
 import {
   I18nProvider,
   useTranslation,
@@ -12,67 +23,73 @@ import {
   useLangInfo,
 } from "bhasha-js";
 
-// Drive the demo via the PUBLIC project key path (x-api-key) — the same path
-// every doc tells real developers to use. NOT the projectId+JWT path, which
-// requires a logged-in admin token and would hang/404 here.
-//
-// Two ways the page gets a key:
-//   1. VITE_DEMO_PROJECT_KEY — a pinned PUBLIC project key (starts with "bjs_").
-//      When set, we use it (a curated, never-expiring demo project).
-//   2. Otherwise we mint a LIVE SANDBOX via POST /api/sandbox (no signup) and
-//      cache it in sessionStorage, so the demo is ALWAYS live with zero config.
+// Optional pinned PUBLIC project key for a "live" demo. When unset (the
+// default), the page runs entirely on the bundled translations below.
 const DEMO_KEY = import.meta.env.VITE_DEMO_PROJECT_KEY as string | undefined;
 const API_URL = (import.meta.env.VITE_API_URL as string) || "http://localhost:5000/api";
 
-// sessionStorage cache so a refresh reuses the same sandbox key (and the same
-// 24h window) instead of minting a fresh project on every reload.
-const SANDBOX_CACHE_KEY = "bhasha_demo_sandbox";
-
-type SandboxSession = { projectKey: string; expiresAt: string };
-
-function readCachedSandbox(): SandboxSession | null {
-  try {
-    const raw = sessionStorage.getItem(SANDBOX_CACHE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as SandboxSession;
-    // Drop a cached key whose 24h window already lapsed — mint a fresh one.
-    if (!parsed.projectKey || new Date(parsed.expiresAt).getTime() <= Date.now()) {
-      sessionStorage.removeItem(SANDBOX_CACHE_KEY);
-      return null;
-    }
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-// A small "this is a live sandbox" banner shown when the page minted its own
-// ephemeral key (vs. running on a pinned VITE_DEMO_PROJECT_KEY).
-function SandboxBanner({ expiresAt }: { expiresAt: string }) {
-  const hoursLeft = Math.max(
-    0,
-    Math.round((new Date(expiresAt).getTime() - Date.now()) / (60 * 60 * 1000))
-  );
-  return (
-    <div style={{
-      padding: "0.6rem 2rem",
-      background: "#1a2b1a",
-      borderBottom: "1px solid #2a3a2a",
-      color: "#8fce8f",
-      fontSize: "0.85rem",
-      display: "flex",
-      alignItems: "center",
-      gap: "0.5rem",
-    }}>
-      <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#4caf50", display: "inline-block" }} />
-      Live sandbox — expires in {hoursLeft}h. No signup needed; this key is
-      driving the SDK right now.
-    </div>
-  );
-}
+// ─── Bundled demo translations ───────────────────────────────
+// Every key DemoContent renders, filled for the languages the switcher offers:
+// en + hi + bn + ur (RTL) + ta. Shape is what the SDK expects:
+//   { lang: { key: value } }  →  preloadedTranslations
+//
+// The values mirror the server's sandbox seed (packages/server/src/routes/
+// sandbox.ts) for the shared keys (hero.title, greeting, nav.home), and add the
+// few keys the seed doesn't cover (nav.about, nav.contact, hero.subtitle,
+// footer.copyright) in the same voice. Keeping the keys exhaustive is what stops
+// the demo from rendering raw keys like "footer.copyright".
+//
+// `{name}` / `{count}` are interpolation placeholders the SDK fills at runtime.
+const DEMO_TRANSLATIONS: Record<string, Record<string, string>> = {
+  en: {
+    "nav.home": "Home",
+    "nav.about": "About",
+    "nav.contact": "Contact",
+    "hero.title": "Ship in every language",
+    "hero.subtitle": "One SDK for register-aware, voice-ready South Asian localization.",
+    greeting: "Welcome back, {name}! You have {count} new messages.",
+    "footer.copyright": "© 2026 BhashaJS. Localization for the next billion users.",
+  },
+  hi: {
+    "nav.home": "होम",
+    "nav.about": "हमारे बारे में",
+    "nav.contact": "संपर्क करें",
+    "hero.title": "हर भाषा में लॉन्च करें",
+    "hero.subtitle": "दक्षिण एशियाई स्थानीयकरण के लिए एक ही SDK — रजिस्टर-सजग और वॉइस-तैयार।",
+    greeting: "वापसी पर स्वागत है, {name}! आपके पास {count} नए संदेश हैं।",
+    "footer.copyright": "© 2026 BhashaJS. अगले अरब उपयोगकर्ताओं के लिए स्थानीयकरण।",
+  },
+  bn: {
+    "nav.home": "হোম",
+    "nav.about": "আমাদের সম্পর্কে",
+    "nav.contact": "যোগাযোগ",
+    "hero.title": "প্রতিটি ভাষায় চালু করুন",
+    "hero.subtitle": "দক্ষিণ এশীয় স্থানীয়করণের জন্য একটি SDK — রেজিস্টার-সচেতন ও ভয়েস-প্রস্তুত।",
+    greeting: "আবার স্বাগতম, {name}! আপনার {count}টি নতুন বার্তা রয়েছে।",
+    "footer.copyright": "© ২০২৬ BhashaJS. পরবর্তী বিলিয়ন ব্যবহারকারীর জন্য স্থানীয়করণ।",
+  },
+  ur: {
+    "nav.home": "ہوم",
+    "nav.about": "ہمارے بارے میں",
+    "nav.contact": "رابطہ کریں",
+    "hero.title": "ہر زبان میں لانچ کریں",
+    "hero.subtitle": "جنوبی ایشیائی لوکلائزیشن کے لیے ایک ہی SDK — رجسٹر سے آگاہ اور وائس کے لیے تیار۔",
+    greeting: "واپسی پر خوش آمدید، {name}! آپ کے پاس {count} نئے پیغامات ہیں۔",
+    "footer.copyright": "© 2026 BhashaJS۔ اگلے ایک ارب صارفین کے لیے لوکلائزیشن۔",
+  },
+  ta: {
+    "nav.home": "முகப்பு",
+    "nav.about": "எங்களைப் பற்றி",
+    "nav.contact": "தொடர்பு",
+    "hero.title": "ஒவ்வொரு மொழியிலும் வெளியிடுங்கள்",
+    "hero.subtitle": "தென்னாசிய உள்ளூராக்கத்திற்கான ஒரே SDK — பதிவு-விழிப்புணர்வு மற்றும் குரல்-தயார்.",
+    greeting: "மீண்டும் வரவேற்கிறோம், {name}! உங்களுக்கு {count} புதிய செய்திகள் உள்ளன.",
+    "footer.copyright": "© 2026 BhashaJS. அடுத்த பில்லியன் பயனர்களுக்கான உள்ளூராக்கம்.",
+  },
+};
 
 // This is the "inner" app that uses translations
-function DemoContent({ sandboxExpiresAt }: { sandboxExpiresAt?: string }) {
+function DemoContent() {
   const { t, currentLang, isLoading } = useTranslation();
   const { dir, font, name } = useLangInfo();
 
@@ -88,7 +105,6 @@ function DemoContent({ sandboxExpiresAt }: { sandboxExpiresAt?: string }) {
       background: "#0f0f12",
       color: "#e8e4df",
     }}>
-      {sandboxExpiresAt && <SandboxBanner expiresAt={sandboxExpiresAt} />}
       {/* Navbar */}
       <nav style={{
         display: "flex",
@@ -144,40 +160,14 @@ function DemoContent({ sandboxExpiresAt }: { sandboxExpiresAt?: string }) {
   );
 }
 
-// A centered status card — used for the brief "minting your sandbox…" wait and
-// for the rare case where the sandbox mint fails (e.g. API down). The page is
-// never dead-on-arrival with an infinite "Loading…".
-function StatusCard({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <div style={{
-      minHeight: "100vh",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      background: "#0f0f12",
-      color: "#e8e4df",
-      padding: "2rem",
-      fontFamily: "system-ui, -apple-system, sans-serif",
-    }}>
-      <div style={{
-        maxWidth: "520px",
-        background: "#1e1e28",
-        border: "1px solid #2a2a36",
-        borderRadius: "12px",
-        padding: "2rem",
-      }}>
-        <h1 style={{ fontSize: "1.5rem", marginBottom: "0.75rem" }}>{title}</h1>
-        <div style={{ color: "#9a968f", lineHeight: 1.6 }}>{children}</div>
-      </div>
-    </div>
-  );
-}
-
-// The outer wrapper — sets up the I18nProvider via the public projectKey path.
-// When VITE_DEMO_PROJECT_KEY is set we use it directly; otherwise we mint a
-// live sandbox (no signup) so the demo is ALWAYS live.
+// The outer wrapper — sets up the I18nProvider.
+//
+// DEFAULT (no env var): bundled, instant demo. `preloadedTranslations` makes the
+// SDK serve everything from memory — no fetch, no sandbox, no DB writes.
+//
+// OPTIONAL: when VITE_DEMO_PROJECT_KEY is set, drive the SDK against the live API
+// using that public key instead.
 export default function DemoPage() {
-  // A pinned demo key short-circuits all sandbox logic.
   if (DEMO_KEY) {
     return (
       <I18nProvider
@@ -190,80 +180,14 @@ export default function DemoPage() {
       </I18nProvider>
     );
   }
-  return <SandboxDemo />;
-}
-
-// No pinned key → mint (or reuse a cached) live sandbox, then drive the SDK.
-function SandboxDemo() {
-  const [session, setSession] = useState<SandboxSession | null>(() => readCachedSandbox());
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    // Already have a valid cached sandbox — nothing to mint.
-    if (session) return;
-    let cancelled = false;
-
-    (async () => {
-      try {
-        const res = await fetch(`${API_URL}/sandbox`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: "{}",
-        });
-        const body = await res.json();
-        if (!res.ok || !body?.success) {
-          throw new Error(body?.message || `Sandbox request failed (${res.status})`);
-        }
-        const next: SandboxSession = {
-          projectKey: body.data.projectKey,
-          expiresAt: body.data.expiresAt,
-        };
-        try {
-          sessionStorage.setItem(SANDBOX_CACHE_KEY, JSON.stringify(next));
-        } catch {
-          /* private mode / storage full — the in-memory session still works */
-        }
-        if (!cancelled) setSession(next);
-      } catch (e: any) {
-        if (!cancelled) setError(e?.message || "Could not start the live sandbox.");
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [session]);
-
-  if (error) {
-    return (
-      <StatusCard title="Couldn’t start the live sandbox">
-        <p style={{ marginBottom: "1rem" }}>{error}</p>
-        <p>
-          The demo normally mints a temporary public key automatically. You can
-          also pin one by setting{" "}
-          <code style={{ color: "#e07a3a" }}>VITE_DEMO_PROJECT_KEY</code> to a{" "}
-          <code style={{ color: "#e07a3a" }}>bjs_</code> key and rebuilding.
-        </p>
-      </StatusCard>
-    );
-  }
-
-  if (!session) {
-    return (
-      <StatusCard title="Spinning up your live sandbox…">
-        <p>Minting a temporary project key and sample translations — no signup needed.</p>
-      </StatusCard>
-    );
-  }
 
   return (
     <I18nProvider
-      projectKey={session.projectKey}
-      apiUrl={API_URL}
+      preloadedTranslations={DEMO_TRANSLATIONS}
       defaultLang="en"
       onLanguageChange={(lang: string) => console.log("Language changed to:", lang)}
     >
-      <DemoContent sandboxExpiresAt={session.expiresAt} />
+      <DemoContent />
     </I18nProvider>
   );
 }
