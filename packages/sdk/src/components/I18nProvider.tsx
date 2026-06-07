@@ -107,12 +107,36 @@ export function I18nProvider({
   // project's data.
   const clientConfig = `${projectId}|${projectKey}|${apiUrl}|${apiToken}`;
   if (!clientRef.current || clientConfigRef.current !== clientConfig) {
+    // Distinguish a genuine PROJECT SWITCH (the client already existed for a
+    // different config) from the FIRST mount. Only a switch needs the locale
+    // reset below — on first mount state already holds the right defaults.
+    const isProjectSwitch = clientRef.current !== null;
+
     clientRef.current = new TranslationClient(projectId, apiUrl, apiToken, projectKey);
     clientConfigRef.current = clientConfig;
 
     // If preloaded translations were provided, load them into cache immediately
     if (preloadedTranslations) {
       clientRef.current.preload(preloadedTranslations);
+    }
+
+    if (isProjectSwitch) {
+      // ── PROJECT SWITCH: atomically reset locale state + invalidate in-flight ──
+      // This runs in the render phase, synchronously, the instant a new project
+      // identity is observed — strictly before the init effect (and before any
+      // commit from a still-pending applyLocale/setLang/init of the OLD project).
+      // The reset is factored into a pure helper so it can be unit-tested.
+      resetLocaleForProjectSwitch(
+        { localeReqRef, pendingLangRef, pendingRegisterRef },
+        { defaultLang, register: initialResolvedRegister },
+        {
+          setCurrentLang,
+          setCurrentRegister,
+          setError,
+          setIsLoading,
+          setSupportedLangs,
+        }
+      );
     }
   }
 
@@ -121,22 +145,33 @@ export function I18nProvider({
   // ─── Initialization ──────────────────────────────────────────
 
   useEffect(() => {
+    // Claim this init under the shared locale counter. The render-phase project
+    // switch already bumped it (invalidating the old project's in-flight work),
+    // and a NEW switch arriving while THIS init is mid-fetch will bump it again
+    // — so the guards below stop a slow init from committing the old project's
+    // languages/translations against the newer client/state. Mirrors applyLocale.
+    const reqId = ++localeReqRef.current;
+
     async function init() {
       setIsLoading(true);
       setError(null);
 
       try {
+        const targetRegister = pendingRegisterRef.current;
+
         if (preloadedTranslations) {
           const langs = Object.keys(preloadedTranslations);
           client.setSupportedLangs(langs);
+          if (reqId !== localeReqRef.current) return; // superseded by a switch
           setSupportedLangs(langs);
         } else {
           const langs = await client.fetchProjectInfo();
+          if (reqId !== localeReqRef.current) return; // superseded by a switch
           setSupportedLangs(langs);
         }
 
         // Always fetch the requested register for the default language.
-        await client.fetchTranslations(defaultLang, currentRegister);
+        await client.fetchTranslations(defaultLang, targetRegister);
 
         // Also fetch English as a fallback (default register only — English
         // doesn't get formal/casual splits in this product).
@@ -146,28 +181,37 @@ export function I18nProvider({
 
         // If the requested register isn't "default", also pre-warm "default"
         // for the current lang so register-fallback is instant.
-        if (currentRegister !== DEFAULT_REGISTER) {
+        if (targetRegister !== DEFAULT_REGISTER) {
           await client.fetchTranslations(defaultLang, DEFAULT_REGISTER);
         }
 
         // Voice mode: also fetch the IPA/SSML bundle so formatPhonetic and
         // formatSSML can return non-empty strings synchronously.
         if (voiceEnabled) {
-          await client.fetchVoice(defaultLang, currentRegister);
-          if (currentRegister !== DEFAULT_REGISTER) {
+          await client.fetchVoice(defaultLang, targetRegister);
+          if (targetRegister !== DEFAULT_REGISTER) {
             await client.fetchVoice(defaultLang, DEFAULT_REGISTER);
           }
         }
+
+        // A newer project switch (or locale switch) superseded this init while
+        // we were fetching — let it own the loading state and committed locale
+        // rather than clobber the new project's data with the old one's.
+        if (reqId !== localeReqRef.current) return;
 
         preloadFonts(client.getSupportedLangs());
         applyLangToDocument(defaultLang);
 
         setRenderTrigger((prev) => prev + 1);
       } catch (e: any) {
+        // Don't surface the old project's init error over the new project's load.
+        if (reqId !== localeReqRef.current) return;
         setError(e.message || "Failed to initialize BhashaJS");
         console.error("[BhashaJS] Initialization error:", e);
       } finally {
-        setIsLoading(false);
+        // Only the latest init owns isLoading; a superseded one must not flip the
+        // spinner off while the new project is still loading.
+        if (reqId === localeReqRef.current) setIsLoading(false);
       }
     }
 
@@ -376,6 +420,66 @@ export function resolveRegisterFromSegment(
 ): Register {
   if (segment && rules && rules[segment]) return rules[segment];
   return fallback;
+}
+
+/** Minimal shape of a React ref cell — `{ current }` — so the reset helper can
+ *  be driven in a test without importing React's `MutableRefObject`. */
+interface RefCell<T> {
+  current: T;
+}
+
+/**
+ * Atomically reset the locale machinery on a PROJECT SWITCH (projectId /
+ * projectKey / apiUrl / apiToken changed, so the TranslationClient was
+ * recreated). This is pulled out of the provider body so the load-bearing
+ * race-fix can be unit-tested without a DOM render harness.
+ *
+ * It does two things, in this order, synchronously:
+ *
+ *  1. INVALIDATE IN-FLIGHT WORK from the previous project. Both `applyLocale`
+ *     and the init effect capture `reqId = ++localeReq.current` up front and
+ *     bail with `if (reqId !== localeReq.current) return` before committing
+ *     lang/register/translations. Bumping the shared counter here makes every
+ *     reqId issued by the OLD project stale, so a slow old-project fetch can no
+ *     longer resolve and clobber the NEW client/state.
+ *
+ *  2. RESET both the pending locale target (refs) and the committed React state
+ *     to the new project's defaults — clearing the old project's
+ *     lang/register/error and emptying `supportedLangs` so the new project's
+ *     languages reload. Resetting the pending refs keeps the atomic-locale
+ *     setters diffing against the right baseline.
+ *
+ * Exported for tests.
+ */
+export function resetLocaleForProjectSwitch(
+  refs: {
+    localeReqRef: RefCell<number>;
+    pendingLangRef: RefCell<string>;
+    pendingRegisterRef: RefCell<Register>;
+  },
+  defaults: { defaultLang: string; register: Register },
+  setters: {
+    setCurrentLang: (lang: string) => void;
+    setCurrentRegister: (register: Register) => void;
+    setError: (error: string | null) => void;
+    setIsLoading: (loading: boolean) => void;
+    setSupportedLangs: (langs: string[]) => void;
+  }
+): void {
+  // 1. Invalidate every reqId the previous project already issued.
+  refs.localeReqRef.current++;
+
+  // 2a. Reset the pending locale target to the new project's defaults.
+  refs.pendingLangRef.current = defaults.defaultLang;
+  refs.pendingRegisterRef.current = defaults.register;
+
+  // 2b. Reset committed state: drop the old project's lang/register/error and
+  //     reload the new project's supported languages from scratch.
+  setters.setCurrentLang(defaults.defaultLang);
+  setters.setCurrentRegister(defaults.register);
+  setters.setError(null);
+  setters.setIsLoading(true);
+  setters.setSupportedLangs([]);
 }
 
 /**

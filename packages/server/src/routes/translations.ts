@@ -46,7 +46,7 @@ import {
 import { isValidRegister, REGISTERS } from "../models/Translation";
 import { resolveWriteSource } from "../utils/compliance";
 import { withTransactionOrFallback } from "../utils/transaction";
-import { reserveUsage, refundUsage, getUsage } from "../utils/usage";
+import { reserveUsage, refundUsage, getUsage, currentPeriod } from "../utils/usage";
 
 // Escape user input destined for a Mongo $regex so it's matched as a literal
 // substring. Without this, a crafted pattern like "(a+)+$" forces catastrophic
@@ -779,7 +779,10 @@ router.post(
       // getAIProvider().translate() (the test suite relies on a 429 with NO AI
       // call). Keys that ultimately fail are refunded below.
       const cap = (project as any).aiMonthlyCap as number;
-      if (!(await reserveUsage(projectId as string, cap, toTranslate.length))) {
+      // Capture the period at reserve time so a request that crosses the UTC
+      // month boundary refunds the SAME bucket it reserved.
+      const meterPeriod = currentPeriod();
+      if (!(await reserveUsage(projectId as string, cap, toTranslate.length, false, meterPeriod))) {
         const { keysTranslated } = await getUsage(projectId as string);
         return sendError(
           res,
@@ -883,6 +886,9 @@ router.post(
       const translatedKeys: string[] = [];
 
       for (const t of toTranslate) {
+        // Stop persisting if the client disconnected mid-loop — respect the
+        // cancel; the finally refunds whatever wasn't written.
+        if (aborted) break;
         if (aiResults[t.key]) {
           const oldValue = readValue(t.translations as any, targetLang, targetRegister) || "";
           writeValue(t, "translations", targetLang, targetRegister, aiResults[t.key]);
@@ -947,7 +953,7 @@ router.post(
         // refund written work, so this can't double-refund.
         res.off("close", onClose);
         const refund = reservedCount - writtenCount;
-        if (refund > 0) await refundUsage(projectId as string, refund);
+        if (refund > 0) await refundUsage(projectId as string, refund, false, meterPeriod);
       }
     } catch (e: any) {
       console.error("[BhashaJS] AI translation error:", e.message);
@@ -1243,7 +1249,10 @@ router.post(
       // keysTranslated budget (atomically) — repeated voice generation now
       // actually consumes the cap it's checked against.
       const voiceCap = (project as any).aiMonthlyCap as number;
-      if (!(await reserveUsage(projectId as string, voiceCap, candidates.length, true))) {
+      // Capture the period at reserve time so a month-boundary-crossing request
+      // refunds the SAME bucket it reserved.
+      const meterPeriod = currentPeriod();
+      if (!(await reserveUsage(projectId as string, voiceCap, candidates.length, true, meterPeriod))) {
         const { keysTranslated } = await getUsage(projectId as string);
         return sendError(
           res,
@@ -1306,6 +1315,7 @@ router.post(
 
       const generatedKeys: string[] = [];
       for (const t of candidates) {
+        if (aborted) break; // client disconnected mid-loop — stop; finally refunds the rest
         const result = aiResults[t.key];
         if (!result) continue;
 
@@ -1335,7 +1345,7 @@ router.post(
         // that weren't persisted; never refund written work (no double-refund).
         res.off("close", onClose);
         const refund = reservedCount - writtenCount;
-        if (refund > 0) await refundUsage(projectId as string, refund, true);
+        if (refund > 0) await refundUsage(projectId as string, refund, true, meterPeriod);
       }
     } catch (e: any) {
       console.error("[BhashaJS] Voice generation error:", e?.message);

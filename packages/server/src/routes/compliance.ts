@@ -24,6 +24,7 @@ import { authMiddleware } from "../middleware/auth";
 import { requireProjectRole, ProjectAuthRequest } from "../middleware/projectAuth";
 import Translation from "../models/Translation";
 import TranslationHistory from "../models/TranslationHistory";
+import Project from "../models/Project";
 import User from "../models/User";
 import { sendSuccess, sendError } from "../utils/response";
 import { validateObjectId } from "../utils/validate";
@@ -52,21 +53,36 @@ function isCleared(status: CellStatus): boolean {
   return status === "human" || status === "approved";
 }
 
-// A regulated key is "fully approved" when every (lang, register) cell that
-// EXISTS for it is cleared (human/approved), and at least one cell exists. This
-// is exactly the SDK's serving guarantee — no regulated cell serves unreviewed
-// copy. It deliberately does NOT require languages/registers that aren't present
-// (a key may legitimately target only some locales, and packs ship formal-only
-// cells like hi/formal). COMPLETENESS against an explicit per-key required-locale
-// set is a separate, future dimension — not conflated with "is what's here
-// approved".
-function isFullyApproved(sourcesMap: unknown): boolean {
+// Compliance has TWO distinct states (conflating them is what the audits kept
+// catching):
+//   reviewClean — every (lang, register) cell that EXISTS is cleared (human/
+//     approved), and at least one cell exists. This is exactly the SDK's serving
+//     guarantee: no regulated cell serves unreviewed copy. A formal-only pack
+//     key (e.g. hi/formal approved) is review-clean — NOT "stuck in review".
+//   complete — every SUPPORTED language has a cleared cell in the default
+//     register. This is translation completeness/coverage. An English-only key
+//     in an en/hi/bn project is review-clean but NOT complete.
+// "fullyApproved" is the strict headline: reviewClean AND complete.
+function complianceState(
+  sourcesMap: unknown,
+  supportedLanguages: string[]
+): { reviewClean: boolean; complete: boolean; missingLanguages: string[]; fullyApproved: boolean } {
   let anyCell = false;
-  for (const { value } of iterateCells(sourcesMap as any)) {
+  let reviewClean = true;
+  const clearedDefaultLangs = new Set<string>();
+  for (const { lang, register, value } of iterateCells(sourcesMap as any)) {
     anyCell = true;
-    if (!isCleared(normalizeStatus(value))) return false;
+    const status = normalizeStatus(value);
+    if (!isCleared(status)) reviewClean = false;
+    if (register === DEFAULT_REGISTER && isCleared(status)) clearedDefaultLangs.add(lang);
   }
-  return anyCell;
+  reviewClean = anyCell && reviewClean;
+
+  const supported = supportedLanguages || [];
+  const missingLanguages = supported.filter((l) => !clearedDefaultLangs.has(l));
+  const complete = supported.length > 0 && missingLanguages.length === 0;
+
+  return { reviewClean, complete, missingLanguages, fullyApproved: reviewClean && complete };
 }
 
 // Escape one CSV field per RFC 4180: wrap in double quotes if it contains a
@@ -97,6 +113,11 @@ router.get(
 
       const idError = validateObjectId(projectId as string, "Project ID");
       if (idError) return sendError(res, 400, idError);
+
+      const project = await Project.findById(projectId)
+        .select("supportedLanguages")
+        .lean<{ supportedLanguages: string[] }>();
+      const supportedLanguages = project?.supportedLanguages || [];
 
       // Only regulated keys are auditable — the lock guarantee (and therefore
       // the evidence a buyer needs) only applies to them.
@@ -164,7 +185,7 @@ router.get(
         return {
           key: t.key,
           mandatedBy: (t as any).mandatedBy || "",
-          fullyApproved: isFullyApproved(t.sources),
+          ...complianceState(t.sources, supportedLanguages),
           statuses,
           history,
         };
@@ -242,21 +263,31 @@ router.get(
       const idError = validateObjectId(projectId as string, "Project ID");
       if (idError) return sendError(res, 400, idError);
 
+      const project = await Project.findById(projectId)
+        .select("supportedLanguages")
+        .lean<{ supportedLanguages: string[] }>();
+      const supportedLanguages = project?.supportedLanguages || [];
+
       const translations = await Translation.find({ projectId, regulated: true });
 
+      let reviewClean = 0;
+      let complete = 0;
       let fullyApproved = 0;
-      let withPending = 0;
+      let withUnreviewed = 0;
       for (const t of translations) {
-        // Fully approved = every cell present is cleared; otherwise there's an
-        // ai/pending cell (or no cells), so it isn't audit-ready.
-        if (isFullyApproved(t.sources)) fullyApproved++;
-        else withPending++;
+        const s = complianceState(t.sources, supportedLanguages);
+        if (s.reviewClean) reviewClean++;
+        else withUnreviewed++;
+        if (s.complete) complete++;
+        if (s.fullyApproved) fullyApproved++;
       }
 
       return sendSuccess(res, 200, {
         total: translations.length,
-        fullyApproved,
-        withPending,
+        reviewClean, // no unreviewed copy serves (the lock guarantee)
+        complete, // every supported language approved (coverage)
+        fullyApproved, // reviewClean AND complete
+        withUnreviewed, // has an ai/pending cell (or none)
       });
     } catch (e) {
       return sendError(res, 500, "Failed to build compliance summary");

@@ -172,16 +172,19 @@ describe("compliance audit trail", () => {
     expect(res.status).toBe(200);
     expect(res.body.data).toEqual({
       total: 2,
-      fullyApproved: 1, // kyc.disclosure (en human + hi approved)
-      withPending: 1, // loan.terms (hi pending)
+      reviewClean: 1, // kyc (en human + hi approved); loan has a pending hi cell
+      complete: 1, // kyc covers all supported langs (en, hi) in the default register
+      fullyApproved: 1, // kyc is reviewClean AND complete
+      withUnreviewed: 1, // loan.terms (hi pending)
     });
   });
 
-  it("a regulated key is fully approved when its PRESENT cells are cleared, even if a supported language is absent (B2)", async () => {
-    // Guards the round-3 revert: 'fully approved' must NOT require every supported
-    // language — a key may legitimately target only some locales (or ship a
-    // formal-only pack cell). The earlier all-supported-languages rule would
-    // wrongly mark this incomplete forever.
+  it("separates review-clean from complete: an English-only key is review-clean but NOT fully approved", async () => {
+    // The crux of rounds 3 + 5. reviewClean = no unreviewed copy serves (the
+    // lock guarantee — an approved English cell satisfies it). complete = every
+    // SUPPORTED language is approved (hi + bn are absent → not complete). So the
+    // key is review-clean (not "stuck in review") but NOT fully approved (not
+    // "everything is done"). Both states are surfaced, not conflated.
     const owner = await registerUser({ email: "owner-b2@example.com" });
     const projRes = await request()
       .post("/api/projects")
@@ -189,8 +192,6 @@ describe("compliance audit trail", () => {
       .send({ name: "PartialReg", supportedLanguages: ["en", "hi", "bn"] });
     const projectId = projRes.body.data._id;
 
-    // Regulated key with ONLY an English cell (owner → "human" = cleared). hi/bn
-    // are supported but absent for this key.
     await request()
       .post(`/api/translations/${projectId}`)
       .set("Authorization", bearer(owner.token))
@@ -199,13 +200,22 @@ describe("compliance audit trail", () => {
     const summary = await request()
       .get(`/api/projects/${projectId}/compliance/summary`)
       .set("Authorization", bearer(owner.token));
-    expect(summary.body.data).toEqual({ total: 1, fullyApproved: 1, withPending: 0 });
+    expect(summary.body.data).toEqual({
+      total: 1,
+      reviewClean: 1, // the present English cell is approved — nothing unreviewed serves
+      complete: 0, // hi + bn are supported but absent
+      fullyApproved: 0, // review-clean but not complete
+      withUnreviewed: 0,
+    });
 
     const audit = await request()
       .get(`/api/projects/${projectId}/compliance/audit`)
       .set("Authorization", bearer(owner.token));
     const k = audit.body.data.keys.find((x: any) => x.key === "kyc.notice");
-    expect(k.fullyApproved).toBe(true);
+    expect(k.reviewClean).toBe(true);
+    expect(k.complete).toBe(false);
+    expect(k.fullyApproved).toBe(false);
+    expect(k.missingLanguages.sort()).toEqual(["bn", "hi"]);
   });
 
   it("forbids a non-owner (translator) from the audit and summary (403)", async () => {

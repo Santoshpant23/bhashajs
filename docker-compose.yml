@@ -35,20 +35,25 @@ services:
     logging: *default-logging
     depends_on:
       - mongo
+    # Pass the WHOLE .env (Vertex, SMTP, GEMINI_MODEL, RUN_MIGRATIONS,
+    # AI_MONTHLY_CAP_DEFAULT, APP_URL, …) — the old cherry-picked list silently
+    # dropped most of it. `environment` below overrides only the few values that
+    # are compose-specific (the bundled-Mongo URL, etc.).
+    env_file: .env
     environment:
       NODE_ENV: production
       PORT: 5000
       MONGO_CONNECTION_URL: mongodb://root:${MONGO_ROOT_PASSWORD:-changeme}@mongo:27017/bhashajs?authSource=admin
-      JWT_SECRET: ${JWT_SECRET}
-      JWT_EXPIRY: ${JWT_EXPIRY:-7d}
-      GEMINI_API_KEY: ${GEMINI_API_KEY}
       CORS_ORIGIN: ${CORS_ORIGIN:-https://bhashajs.com}
-      AI_PROVIDER: ${AI_PROVIDER:-gemini}
 
   dashboard:
     build:
-      context: ./packages/dashboard
-      dockerfile: Dockerfile
+      # Build from the MONOREPO ROOT so the npm workspace links `bhasha-js` to the
+      # local packages/sdk instead of fetching it from the public registry. This
+      # decouples the self-host build from npm release ordering (the public
+      # registry may lag the in-repo SDK version).
+      context: .
+      dockerfile: packages/dashboard/Dockerfile
     restart: unless-stopped
     logging: *default-logging
     depends_on:

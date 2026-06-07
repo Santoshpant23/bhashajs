@@ -23,3 +23,5 @@ coverage
 
 # Analysis / planning scratch
 .bhasha-analysis
+# Audit scratch (markdown findings) — never needed in a build context.
+audit/

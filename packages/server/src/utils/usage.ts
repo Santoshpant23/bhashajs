@@ -103,9 +103,9 @@ export async function reserveUsage(
   projectId: string | mongoose.Types.ObjectId,
   cap: number,
   count: number,
-  voice = false
+  voice = false,
+  period: string = currentPeriod()
 ): Promise<boolean> {
-  const period = currentPeriod();
   const inc: Record<string, number> = { keysTranslated: count, aiCalls: 1 };
   if (voice) inc.voiceCalls = count;
 
@@ -133,17 +133,22 @@ export async function reserveUsage(
   return updated != null;
 }
 
-/** Refund a reservation for AI work that failed or was aborted. */
+/**
+ * Refund a reservation for AI work that failed or was aborted. Defaults to the
+ * current period, but the routes pass the period the reservation was MADE in so
+ * a request that crosses the UTC month boundary refunds the right bucket.
+ */
 export async function refundUsage(
   projectId: string | mongoose.Types.ObjectId,
   count: number,
-  voice = false
+  voice = false,
+  period: string = currentPeriod()
 ): Promise<void> {
   if (count <= 0) return;
   const inc: Record<string, number> = { keysTranslated: -count };
   if (voice) inc.voiceCalls = -count;
   await AiUsage.updateOne(
-    { projectId, period: currentPeriod() },
+    { projectId, period },
     { $inc: inc, $set: { updatedAt: new Date() } }
   );
 }

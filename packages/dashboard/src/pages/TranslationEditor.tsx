@@ -190,14 +190,24 @@ interface AuditEvent {
 interface AuditKey {
   key: string;
   mandatedBy: string;
+  // reviewClean = no unreviewed (ai/pending) copy can serve — the lock
+  // guarantee. complete = every supported language approved in the default
+  // register. fullyApproved = reviewClean AND complete. A regulated key can
+  // be reviewClean (nothing unreviewed serves) yet incomplete (languages not
+  // translated at all): review-clean ≠ fully translated.
+  reviewClean: boolean;
+  complete: boolean;
   fullyApproved: boolean;
+  missingLanguages: string[];
   statuses: { lang: string; register: Register; status: string }[];
   history: AuditEvent[];
 }
 interface ComplianceSummary {
   total: number;
+  reviewClean: number;
+  complete: number;
   fullyApproved: number;
-  withPending: number;
+  withUnreviewed: number;
 }
 
 // Language display names — 13 South Asian languages + English + Latin-script variants
@@ -381,6 +391,12 @@ export default function TranslationEditor() {
 
   // Keyboard shortcuts
   const originalValueRef = useRef<Record<string, string>>({});
+  // Set to a cell's "id:lang" key when Escape cancels its edit. The cell then
+  // blurs synchronously and fires onBlur → saveTranslation BEFORE React has
+  // committed the revert, so the save's change-guard would still see the
+  // edited value and persist the cancelled copy. The blur handler checks and
+  // clears this flag to skip exactly one save after an Escape-cancel.
+  const skipNextBlurSaveRef = useRef<string | null>(null);
   const [cellFocused, setCellFocused] = useState(false);
 
   // History
@@ -1073,9 +1089,14 @@ export default function TranslationEditor() {
 
     if (e.key === "Escape") {
       e.preventDefault();
-      const original = originalValueRef.current[`${translation._id}:${lang}`] ?? "";
+      const refKey = `${translation._id}:${lang}`;
+      const original = originalValueRef.current[refKey] ?? "";
       handleValueChange(translation._id, lang, original);
       setHasUnsaved(false);
+      // The revert above is queued, not committed — so the blur this triggers
+      // would otherwise save the still-edited closure value. Flag this cell so
+      // the onBlur skips its save exactly once: Escape is a true cancel.
+      skipNextBlurSaveRef.current = refKey;
       input.blur();
       return;
     }
@@ -1999,19 +2020,35 @@ export default function TranslationEditor() {
                 for your compliance review.
               </p>
 
-              {/* Summary banner */}
+              {/* Summary banner. Two honest states, not one: review-clean is
+                  the lock guarantee (no unreviewed copy serves) and is distinct
+                  from fully approved (review-clean AND every language complete).
+                  A key can be review-clean yet not fully translated. */}
               {complianceSummary && (
                 <div className="compliance-summary">
                   <div className="compliance-stat">
                     <span className="compliance-stat-num">{complianceSummary.total}</span>
                     <span className="compliance-stat-label">Regulated keys</span>
                   </div>
-                  <div className="compliance-stat compliance-stat-ok">
+                  <div
+                    className="compliance-stat compliance-stat-ok"
+                    title="No unreviewed (AI/pending) copy can serve — the lock guarantee. May still be missing languages."
+                  >
+                    <span className="compliance-stat-num">{complianceSummary.reviewClean}</span>
+                    <span className="compliance-stat-label">Review-clean</span>
+                  </div>
+                  <div
+                    className="compliance-stat compliance-stat-ok"
+                    title="Review-clean AND every supported language approved in the default register."
+                  >
                     <span className="compliance-stat-num">{complianceSummary.fullyApproved}</span>
                     <span className="compliance-stat-label">Fully approved</span>
                   </div>
-                  <div className="compliance-stat compliance-stat-pending">
-                    <span className="compliance-stat-num">{complianceSummary.withPending}</span>
+                  <div
+                    className="compliance-stat compliance-stat-pending"
+                    title="Has unreviewed (AI/pending) copy that would not serve under the lock."
+                  >
+                    <span className="compliance-stat-num">{complianceSummary.withUnreviewed}</span>
                     <span className="compliance-stat-label">Need review</span>
                   </div>
                 </div>
@@ -2055,14 +2092,46 @@ export default function TranslationEditor() {
                             <span style={{ marginRight: "0.4em" }} aria-hidden>🔒</span>
                             {k.key}
                           </code>
-                          <span
-                            className={`compliance-badge ${
-                              k.fullyApproved ? "compliance-badge-ok" : "compliance-badge-pending"
-                            }`}
-                          >
-                            {k.fullyApproved ? "Fully approved" : "Needs review"}
+                          {/* Two distinct states. Review-clean = the lock
+                              guarantee (no unreviewed copy serves). Fully
+                              approved = review-clean AND every language
+                              complete. We never label a review-clean-but-
+                              incomplete key "Fully approved" — that would
+                              imply an English-only regulated key is done. */}
+                          <span className="compliance-badge-group">
+                            <span
+                              className={`compliance-badge ${
+                                k.reviewClean
+                                  ? "compliance-badge-ok"
+                                  : "compliance-badge-pending"
+                              }`}
+                              title="No unreviewed (AI/pending) copy can serve under the lock."
+                            >
+                              {k.reviewClean ? "Review-clean" : "Needs review"}
+                            </span>
+                            <span
+                              className={`compliance-badge ${
+                                k.fullyApproved
+                                  ? "compliance-badge-ok"
+                                  : "compliance-badge-pending"
+                              }`}
+                              title="Review-clean AND every supported language approved in the default register."
+                            >
+                              {k.fullyApproved ? "Fully approved" : "Incomplete"}
+                            </span>
                           </span>
                         </div>
+                        {/* The key insight: review-clean ≠ fully translated.
+                            When clean but not complete, name the gap so the
+                            owner doesn't read "Review-clean" as "shippable". */}
+                        {k.reviewClean && !k.complete && k.missingLanguages.length > 0 && (
+                          <p className="compliance-missing">
+                            Review-clean, but missing:{" "}
+                            {k.missingLanguages
+                              .map((l) => LANG_NAMES[l] || l)
+                              .join(", ")}
+                          </p>
+                        )}
                         {k.mandatedBy && (
                           <p className="compliance-citation">
                             <strong>Citation:</strong> {k.mandatedBy}
@@ -2505,6 +2574,16 @@ export default function TranslationEditor() {
                               onChange={(e) => handleValueChange(t._id, lang, e.target.value)}
                               onFocus={() => handleCellFocus(t._id, lang, cellValue)}
                               onBlur={() => {
+                                // If Escape just cancelled this cell, its revert
+                                // is still queued (not committed), so saving now
+                                // would persist the cancelled value. Skip exactly
+                                // this one save and clear the flag.
+                                const refKey = `${t._id}:${lang}`;
+                                if (skipNextBlurSaveRef.current === refKey) {
+                                  skipNextBlurSaveRef.current = null;
+                                  setCellFocused(false);
+                                  return;
+                                }
                                 // saveTranslation owns the "did it actually
                                 // change?" guard now (comparing against
                                 // originalValueRef), so EVERY save path — blur,

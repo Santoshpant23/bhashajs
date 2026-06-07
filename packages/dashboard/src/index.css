@@ -2434,6 +2434,18 @@ kbd {
   border-color: rgba(217, 165, 68, 0.45);
   color: var(--warning);
 }
+.compliance-badge-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-shrink: 0;
+}
+.compliance-missing {
+  margin: 0 0 0.5rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--warning);
+}
 .compliance-citation {
   margin: 0 0 0.5rem;
   font-size: 0.8rem;
