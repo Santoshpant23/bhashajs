@@ -57,11 +57,20 @@ export async function recordUsage(
   if (deltas.calls) inc.aiCalls = deltas.calls;
   if (Object.keys(inc).length === 0) return;
 
-  await AiUsage.updateOne(
-    { projectId, period: currentPeriod() },
-    { $inc: inc, $set: { updatedAt: new Date() } },
-    { upsert: true }
-  );
+  const filter = { projectId, period: currentPeriod() };
+  const update = { $inc: inc, $set: { updatedAt: new Date() } };
+  try {
+    await AiUsage.updateOne(filter, update, { upsert: true });
+  } catch (e: any) {
+    // Two concurrent first-of-month upserts can race the unique
+    // { projectId, period } index — the loser throws E11000. The bucket now
+    // exists, so a single retry (a plain $inc, no upsert) always succeeds.
+    if (e?.code === 11000) {
+      await AiUsage.updateOne(filter, update);
+    } else {
+      throw e;
+    }
+  }
 }
 
 /**

@@ -305,20 +305,24 @@ async function start() {
     // Seeding vertical packs is small and idempotent — safe to run each boot.
     await seedVerticalPacks();
 
-    // Sweep any sandbox projects whose 24h TTL has passed (best-effort — a
-    // failed sweep must never block boot; the next restart retries). This is a
-    // cheap indexed delete; the demo's instant-key path also relies on it so
-    // ephemeral sandboxes don't accumulate. (A Mongo TTL index on
-    // Project.expiresAt would drop the projects but NOT cascade their
-    // Translations/ApiKeys — hence this app-level cascade instead.)
-    try {
-      const removed = await cleanupExpiredSandboxes();
-      if (removed > 0) {
-        console.log(`[Sandbox] Cleaned up ${removed} expired sandbox project(s)`);
+    // Sweep expired sandbox projects (24h TTL) at boot AND hourly thereafter,
+    // so they don't accumulate on a long-running server (the demo's instant-key
+    // path mints them with no auth). App-level cascade — a Mongo TTL index would
+    // drop the project but NOT its Translations/ApiKeys. Best-effort: a failed
+    // sweep never blocks boot or crashes the loop.
+    const sweepSandboxes = async () => {
+      try {
+        const removed = await cleanupExpiredSandboxes();
+        if (removed > 0) {
+          console.log(`[Sandbox] Cleaned up ${removed} expired sandbox project(s)`);
+        }
+      } catch (e) {
+        console.error("[Sandbox] Failed to clean up expired sandboxes:", e);
       }
-    } catch (e) {
-      console.error("[Sandbox] Failed to clean up expired sandboxes:", e);
-    }
+    };
+    await sweepSandboxes();
+    const SANDBOX_SWEEP_MS = 60 * 60 * 1000; // hourly
+    setInterval(sweepSandboxes, SANDBOX_SWEEP_MS).unref();
 
     const app = createApp();
     const port = process.env.PORT || 5000;

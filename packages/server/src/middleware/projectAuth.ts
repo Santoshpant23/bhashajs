@@ -12,6 +12,7 @@
  */
 
 import { Response, NextFunction } from "express";
+import mongoose from "mongoose";
 import { AuthRequest } from "./auth";
 import ProjectMember from "../models/ProjectMember";
 import { sendError } from "../utils/response";
@@ -27,6 +28,11 @@ export function requireProjectRole(...allowedRoles: string[]) {
   return async (req: ProjectAuthRequest, res: Response, next: NextFunction) => {
     const projectId = req.params.projectId || req.params.id;
     if (!projectId) return sendError(res, 400, "Project ID is required");
+    // Reject a malformed id with a clean 400 instead of letting the Mongoose
+    // CastError below fall through to a 500.
+    if (!mongoose.Types.ObjectId.isValid(String(projectId))) {
+      return sendError(res, 400, "Invalid project ID");
+    }
 
     try {
       const member = await ProjectMember.findOne({

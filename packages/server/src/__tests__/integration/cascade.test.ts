@@ -17,6 +17,7 @@ import Comment from "../../models/Comment";
 import GlossaryEntry from "../../models/GlossaryEntry";
 import Notification from "../../models/Notification";
 import ProjectMember from "../../models/ProjectMember";
+import ApiKey from "../../models/ApiKey";
 import { useIntegrationServer, request, registerUser, bearer } from "./setup";
 
 describe("cascade delete", () => {
@@ -55,6 +56,13 @@ describe("cascade delete", () => {
       .send({ term: "Welcome", translations: { hi: "स्वागत" } });
     expect(glossaryRes.status).toBe(201);
 
+    // Scoped API key (via HTTP) — must not orphan on project delete.
+    const keyRes = await request()
+      .post(`/api/projects/${projectId}/keys`)
+      .set("Authorization", bearer(owner.token))
+      .send({ name: "ci" });
+    expect(keyRes.status).toBe(201);
+
     // Notification — created directly (the app only mints these as side effects).
     await Notification.create({
       userId: owner.userId,
@@ -68,6 +76,7 @@ describe("cascade delete", () => {
     expect(await Comment.countDocuments({ projectId })).toBe(1);
     expect(await GlossaryEntry.countDocuments({ projectId })).toBe(1);
     expect(await Notification.countDocuments({ projectId })).toBe(1);
+    expect(await ApiKey.countDocuments({ projectId })).toBe(1);
     // Owner membership was auto-created on project creation.
     expect(await ProjectMember.countDocuments({ projectId })).toBe(1);
 
@@ -82,6 +91,7 @@ describe("cascade delete", () => {
     expect(await Comment.countDocuments({ projectId })).toBe(0);
     expect(await GlossaryEntry.countDocuments({ projectId })).toBe(0);
     expect(await Notification.countDocuments({ projectId })).toBe(0);
+    expect(await ApiKey.countDocuments({ projectId })).toBe(0);
     expect(await ProjectMember.countDocuments({ projectId })).toBe(0);
   });
 

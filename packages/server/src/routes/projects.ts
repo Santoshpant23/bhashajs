@@ -24,6 +24,8 @@ import TranslationHistory from "../models/TranslationHistory";
 import Comment from "../models/Comment";
 import GlossaryEntry from "../models/GlossaryEntry";
 import Notification from "../models/Notification";
+import ApiKey from "../models/ApiKey";
+import AiUsage from "../models/AiUsage";
 import User from "../models/User";
 import { sendSuccess, sendError } from "../utils/response";
 import { withTransactionOrFallback } from "../utils/transaction";
@@ -286,6 +288,10 @@ router.delete(
         await GlossaryEntry.deleteMany({ projectId: id }, { session });
         await Notification.deleteMany({ projectId: id }, { session });
         await ProjectMember.deleteMany({ projectId: id }, { session });
+        // The scoped API keys and the AI-usage meters for this project are
+        // dependents too — without these they'd orphan forever (no TTL).
+        await ApiKey.deleteMany({ projectId: id }, { session });
+        await AiUsage.deleteMany({ projectId: id }, { session });
         await Project.deleteOne({ _id: id }, { session });
       });
 

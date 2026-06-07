@@ -54,11 +54,12 @@ function isCleared(status: CellStatus): boolean {
 
 // Escape one CSV field per RFC 4180: wrap in double quotes if it contains a
 // comma, quote, or newline, and double any embedded quotes. A leading
-// =/+/-/@ is prefixed with a single quote to defuse spreadsheet formula
-// injection (a `mandatedBy` citation or value is attacker-influenced text).
+// =/+/-/@ (and tab/CR, per OWASP) is prefixed with a single quote to defuse
+// spreadsheet formula injection (a `mandatedBy` citation or value is
+// attacker-influenced text).
 function csvField(value: unknown): string {
   let s = value == null ? "" : String(value);
-  if (/^[=+\-@]/.test(s)) s = "'" + s;
+  if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
   if (/[",\r\n]/.test(s)) {
     s = '"' + s.replace(/"/g, '""') + '"';
   }
