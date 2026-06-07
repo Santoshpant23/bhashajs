@@ -2,11 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [master, next-version-craft]
+    branches: [master, v0.4-hardening]
   pull_request:
 
 jobs:
-  test:
+  build-and-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,9 +15,15 @@ jobs:
           node-version: 20
           cache: npm
 
-      - name: Install dependencies
-        run: npm install
+      # Clean, lockfile-pinned install (reproducible — `npm install` could drift).
+      - name: Install
+        run: npm ci
 
+      # Fail the build on a high/critical advisory in the dependency tree.
+      - name: Security audit
+        run: npm audit --audit-level=high
+
+      # SDK must be built first — the dashboard imports the built bhasha-js.
       - name: Build SDK
         run: npm run build --workspace bhasha-js
 
@@ -27,5 +33,22 @@ jobs:
       - name: Typecheck server
         run: npm run typecheck --workspace bhashajs-server
 
-      - name: Test server
+      # Cache the mongod binary that mongodb-memory-server downloads for the
+      # integration tests, so CI doesn't re-fetch ~600MB every run.
+      - name: Cache mongodb-memory-server binary
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/mongodb-binaries
+          key: mongodb-binaries-${{ runner.os }}
+
+      - name: Test server (unit + integration)
         run: npm test --workspace bhashajs-server
+
+      - name: Build dashboard
+        run: npm run build --workspace bhashajs-dashboard
+
+      - name: Test dashboard
+        run: npm test --workspace bhashajs-dashboard
+
+      - name: Build landing
+        run: npm run build --workspace bhashajs-landing

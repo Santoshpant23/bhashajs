@@ -1,0 +1,20 @@
+version: 2
+updates:
+  # npm dependencies across the monorepo. Grouped so a wave of patch/minor bumps
+  # lands as one PR instead of many. Security updates always come through.
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  # Keep GitHub Actions (checkout, setup-node, cache) current.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

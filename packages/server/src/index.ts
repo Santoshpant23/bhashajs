@@ -25,38 +25,47 @@ import { seedVerticalPacks } from "./utils/seedPacks";
 
 dotenv.config();
 
-// ─── Validate required env vars ─────────────────────────────
-const REQUIRED_ENV = ["JWT_SECRET", "MONGO_CONNECTION_URL"];
-for (const key of REQUIRED_ENV) {
-  if (!process.env[key]) {
-    console.error(`FATAL: Missing required environment variable: ${key}`);
-    console.error("Copy .env.example to .env and fill in your values.");
+// ─── Env validation ─────────────────────────────────────────
+// Runs from start(), NOT on import — so tests can `createApp()` against an
+// in-memory DB without the real server's process.exit guards firing.
+function validateEnv() {
+  const REQUIRED_ENV = ["JWT_SECRET", "MONGO_CONNECTION_URL"];
+  for (const key of REQUIRED_ENV) {
+    if (!process.env[key]) {
+      console.error(`FATAL: Missing required environment variable: ${key}`);
+      console.error("Copy .env.example to .env and fill in your values.");
+      process.exit(1);
+    }
+  }
+
+  // JWT secret strength. A present-but-weak secret (e.g. the dev placeholder
+  // "something-todo") passes the presence check above and boots clean, leaving
+  // every user's token trivially forgeable. Refuse to start on a weak secret.
+  const jwtSecret = process.env.JWT_SECRET || "";
+  const WEAK_JWT_SECRETS = new Set(["something-todo", "changeme", "secret", "jwt_secret", "your-secret-here"]);
+  if (jwtSecret.length < 32 || WEAK_JWT_SECRETS.has(jwtSecret.toLowerCase())) {
+    console.error(
+      "FATAL: JWT_SECRET is too weak. Use at least 32 random characters.\n" +
+      "Generate one with:  openssl rand -hex 32"
+    );
     process.exit(1);
+  }
+
+  // AI translation is optional at boot but the dashboard's AI/voice endpoints
+  // fail at call time without a key — warn loudly rather than crash.
+  if (!process.env.GEMINI_API_KEY && String(process.env.GEMINI_USE_VERTEX).toLowerCase() !== "true") {
+    console.warn(
+      "[BhashaJS] No AI credentials set — AI translation and voice generation will fail until configured."
+    );
   }
 }
 
-// JWT secret strength. A present-but-weak secret (e.g. the dev placeholder
-// "something-todo") passes the presence check above and boots clean, leaving
-// every user's token trivially forgeable. Refuse to start on a weak secret.
-const jwtSecret = process.env.JWT_SECRET || "";
-const WEAK_JWT_SECRETS = new Set(["something-todo", "changeme", "secret", "jwt_secret", "your-secret-here"]);
-if (jwtSecret.length < 32 || WEAK_JWT_SECRETS.has(jwtSecret.toLowerCase())) {
-  console.error(
-    "FATAL: JWT_SECRET is too weak. Use at least 32 random characters.\n" +
-    "Generate one with:  openssl rand -hex 32"
-  );
-  process.exit(1);
-}
-
-// AI translation is optional at boot but the dashboard's AI/voice endpoints
-// fail at call time without a key — warn loudly rather than crash.
-if (!process.env.GEMINI_API_KEY) {
-  console.warn(
-    "[BhashaJS] GEMINI_API_KEY is not set — AI translation and voice generation will fail until it is."
-  );
-}
-
-const app = express();
+// ─── App factory ────────────────────────────────────────────
+// Builds the Express app (middleware + routes + error handler) WITHOUT
+// connecting to Mongo or listening — so integration tests can drive it with
+// supertest against mongodb-memory-server. start() wires up the bootstrap.
+export function createApp() {
+  const app = express();
 
 // Trust the first proxy hop (nginx / Vercel / Railway) so req.ip and
 // express-rate-limit resolve the real client IP. Without this, behind a proxy
@@ -199,6 +208,9 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
   });
 });
 
+  return app;
+}
+
 // ─── Migration: Ensure existing projects have owner membership ──
 async function migrateOwnerMemberships() {
   const Project = (await import("./models/Project")).default;
@@ -236,6 +248,7 @@ async function migrateOwnerMemberships() {
 // ─── Start ───────────────────────────────────────────────────
 async function start() {
   try {
+    validateEnv();
     await mongoose.connect(process.env.MONGO_CONNECTION_URL || "");
     console.log("MongoDB connected successfully");
 
@@ -268,6 +281,7 @@ async function start() {
     // Seeding vertical packs is small and idempotent — safe to run each boot.
     await seedVerticalPacks();
 
+    const app = createApp();
     const port = process.env.PORT || 5000;
     app.listen(port, () => {
       console.log(`BhashaJS server running on port ${port}`);
@@ -278,15 +292,19 @@ async function start() {
   }
 }
 
-// Don't let an unhandled async error silently kill (or zombie) the process.
-process.on("unhandledRejection", (reason) => {
-  console.error("[BhashaJS] unhandledRejection:", reason);
-});
-process.on("uncaughtException", (err) => {
-  console.error("[BhashaJS] uncaughtException:", err);
-  // The process is in an undefined state — exit and let the container restart
-  // policy bring up a clean one.
-  process.exit(1);
-});
+// Only the real entrypoint registers crash handlers, connects, and listens.
+// Importing this module (e.g. tests using createApp) must do none of that.
+if (require.main === module) {
+  // Don't let an unhandled async error silently kill (or zombie) the process.
+  process.on("unhandledRejection", (reason) => {
+    console.error("[BhashaJS] unhandledRejection:", reason);
+  });
+  process.on("uncaughtException", (err) => {
+    console.error("[BhashaJS] uncaughtException:", err);
+    // The process is in an undefined state — exit and let the container restart
+    // policy bring up a clean one.
+    process.exit(1);
+  });
 
-start();
+  start();
+}
