@@ -67,16 +67,28 @@ app.set("trust proxy", 1);
 // ─── Middleware ───────────────────────────────────────────────
 app.use(express.json({ limit: "1mb" }));
 
-// CORS — accept a comma-separated list, or "*" for any origin.
-// In production set CORS_ORIGIN="https://bhashajs.com,https://app.bhashajs.com"
-const rawOrigin = process.env.CORS_ORIGIN || "*";
-const allowedOrigins = rawOrigin === "*"
-  ? "*"
-  : rawOrigin.split(",").map(s => s.trim()).filter(Boolean);
-app.use(cors({
-  origin: allowedOrigins,
-  credentials: true,
-}));
+// CORS — accept a comma-separated allowlist, or "*" for any origin.
+// In production set CORS_ORIGIN="https://bhashajs.com,https://app.bhashajs.com".
+//
+// `Access-Control-Allow-Origin: *` combined with `Allow-Credentials: true` is an
+// INVALID combination the browser rejects. The app authenticates with HEADERS
+// (the SDK's x-api-key, the dashboard's Authorization: Bearer) — never cookies —
+// so credentials aren't needed. We therefore only enable `credentials` when an
+// explicit origin allowlist is configured; the wildcard is served WITHOUT
+// credentials so it stays valid.
+const rawOrigin = (process.env.CORS_ORIGIN || "*").trim();
+if (rawOrigin === "*") {
+  if (process.env.NODE_ENV === "production") {
+    console.warn(
+      "[BhashaJS] CORS_ORIGIN is not set — allowing all origins without credentials. " +
+      "Set CORS_ORIGIN to your dashboard/site origins in production."
+    );
+  }
+  app.use(cors({ origin: "*", credentials: false }));
+} else {
+  const allowedOrigins = rawOrigin.split(",").map((s) => s.trim()).filter(Boolean);
+  app.use(cors({ origin: allowedOrigins, credentials: true }));
+}
 app.use(helmet());
 
 // ─── Rate Limiting ───────────────────────────────────────────
@@ -104,12 +116,30 @@ const aiLimiter = rateLimit({
   message: { success: false, message: "AI translation rate limit reached, please wait a moment" },
 });
 
+// Tighter cap on expensive/abusable writes that otherwise sat only under the
+// generic 1000/15min limiter: bulk import (large payloads + history inserts),
+// team invites (email fan-out / mail-reputation), and project creation.
+const writeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 50,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: "Too many write requests, please slow down" },
+});
+
 app.use("/api", generalLimiter);
 app.use("/api/auth", authLimiter);
 app.use("/api/translations/:projectId/ai-translate", aiLimiter);
 // generate-voice also calls Gemini per request — cap it on the same bucket so
 // neither AI endpoint can be used to run up the model bill.
 app.use("/api/translations/:projectId/generate-voice", aiLimiter);
+app.use("/api/translations/:projectId/bulk", writeLimiter);
+app.use("/api/projects/:projectId/team/invite", writeLimiter);
+// Project creation is POST /api/projects — throttle it without touching the
+// GET list on the same path.
+app.use("/api/projects", (req, res, next) =>
+  req.method === "POST" ? writeLimiter(req, res, next) : next()
+);
 
 // ─── Health check (before auth routes) ──────────────────────
 app.get("/api/health", (req, res) => {

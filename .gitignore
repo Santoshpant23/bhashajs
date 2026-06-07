@@ -53,3 +53,7 @@ _sandbox/
 
 # npm pack output — build artifact, regenerated on every release
 *.tgz
+
+# Internal council/audit reports (local analysis, not shipped)
+audit/
+.bhasha-analysis/

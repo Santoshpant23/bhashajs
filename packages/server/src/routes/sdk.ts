@@ -102,9 +102,12 @@ router.get("/translations", async (req: Request, res: Response) => {
       if (value) flat[t.key] = value;
     }
 
-    // Cache for 5 minutes. Express adds a weak ETag from the body, so a CDN or
-    // browser revalidates with a 304 instead of re-downloading the whole bundle.
-    res.set("Cache-Control", "public, max-age=300");
+    // Cache for 5 minutes — but PRIVATE only. The project is selected by the
+    // x-api-key HEADER, not the URL, so a SHARED cache (CDN/proxy) keyed on the
+    // URL could serve one project's bundle to another. "private" restricts
+    // caching to the end-user's own browser. Express still adds a weak ETag for
+    // 304 revalidation.
+    res.set("Cache-Control", "private, max-age=300");
     return sendSuccess(res, 200, flat);
   } catch (e) {
     return sendError(res, 500, "Failed to fetch translations");
@@ -163,9 +166,12 @@ router.get("/voice", async (req: Request, res: Response) => {
       }
     }
 
-    // Cache for 5 minutes. Express adds a weak ETag from the body, so a CDN or
-    // browser revalidates with a 304 instead of re-downloading the whole bundle.
-    res.set("Cache-Control", "public, max-age=300");
+    // Cache for 5 minutes — but PRIVATE only. The project is selected by the
+    // x-api-key HEADER, not the URL, so a SHARED cache (CDN/proxy) keyed on the
+    // URL could serve one project's bundle to another. "private" restricts
+    // caching to the end-user's own browser. Express still adds a weak ETag for
+    // 304 revalidation.
+    res.set("Cache-Control", "private, max-age=300");
     return sendSuccess(res, 200, flat);
   } catch (e) {
     return sendError(res, 500, "Failed to fetch voice bundle");

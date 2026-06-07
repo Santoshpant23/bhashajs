@@ -30,7 +30,10 @@ function PublicRoute({ children }: { children: React.ReactNode }) {
     // instead of bouncing them to /projects (matters for invite flows).
     const params = new URLSearchParams(location.search);
     const redirect = params.get("redirect");
-    const safe = redirect && redirect.startsWith("/") ? redirect : "/projects";
+    // Only allow a same-origin path: must start with a SINGLE "/" and not be
+    // followed by "/" or "\" (which would make it a protocol-relative URL like
+    // "//evil.com" or "/\evil.com" — an open redirect). Otherwise go to /projects.
+    const safe = redirect && /^\/(?![/\\])/.test(redirect) ? redirect : "/projects";
     return <Navigate to={safe} replace />;
   }
   return <>{children}</>;

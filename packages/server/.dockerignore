@@ -1,0 +1,19 @@
+# The Docker build context is packages/server, so THIS file is the one Docker
+# honors (a repo-root .dockerignore is never consulted for a sub-dir context).
+# Never bake secrets, credentials, or host artifacts into an image layer.
+node_modules
+dist
+# A stale per-package lock can pin known-vulnerable transitive deps into the
+# image even when the root workspace lock is clean — keep it out so the image
+# resolves fresh against package.json.
+package-lock.json
+.env
+.env.*
+credentials/
+**/credentials/
+*sa.json
+*service-account*.json
+*.log
+.git
+.dockerignore
+Dockerfile
