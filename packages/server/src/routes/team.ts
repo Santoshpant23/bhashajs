@@ -79,6 +79,9 @@ router.post(
       }
 
       const inviteToken = crypto.randomBytes(32).toString("hex");
+      // Invites expire so a leaked/old link can't be claimed forever.
+      const INVITE_TTL_DAYS = 7;
+      const inviteExpiresAt = new Date(Date.now() + INVITE_TTL_DAYS * 24 * 60 * 60 * 1000);
 
       const member = await ProjectMember.create({
         projectId: projectId as string,
@@ -86,6 +89,7 @@ router.post(
         role: role || "translator",
         assignedLanguages: assignedLanguages || [],
         inviteToken,
+        inviteExpiresAt,
         status: "pending",
         invitedBy: req.userId,
       });
@@ -213,6 +217,15 @@ router.post("/team/accept-invite", async (req: AuthRequest, res: Response) => {
     }
 
     if (member.status !== "active") {
+      // Reject an expired pending invite — a leaked or stale link must not be
+      // claimable forever. (Null inviteExpiresAt = legacy invite, never expires.)
+      if (member.inviteExpiresAt && member.inviteExpiresAt.getTime() < Date.now()) {
+        return sendError(
+          res,
+          410,
+          "This invite has expired. Ask the project owner to send you a new one."
+        );
+      }
       // Live token, not yet activated. Before binding it to the requester, make
       // sure the JWT user's email matches the invite's email. Otherwise a user
       // who happens to be logged into another account in the same browser would

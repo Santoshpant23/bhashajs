@@ -12,6 +12,7 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import User from "../models/User";
 import ProjectMember from "../models/ProjectMember";
+import { authMiddleware, AuthRequest } from "../middleware/auth";
 import { sendSuccess, sendError } from "../utils/response";
 import {
   validateAll,
@@ -81,7 +82,7 @@ router.post("/register", async (req: Request, res: Response) => {
 
     // Generate JWT with userId as payload
     const token = jwt.sign(
-      { userId: user._id },
+      { userId: user._id, tokenVersion: (user as any).tokenVersion ?? 0 },
       process.env.JWT_SECRET!,
       { expiresIn: (process.env.JWT_EXPIRY || "7d") as any }
     );
@@ -123,7 +124,7 @@ router.post("/login", async (req: Request, res: Response) => {
 
     // Generate JWT
     const token = jwt.sign(
-      { userId: user._id },
+      { userId: user._id, tokenVersion: (user as any).tokenVersion ?? 0 },
       process.env.JWT_SECRET!,
       { expiresIn: (process.env.JWT_EXPIRY || "7d") as any }
     );
@@ -135,6 +136,18 @@ router.post("/login", async (req: Request, res: Response) => {
     });
   } catch (e) {
     return sendError(res, 500, "Something went wrong during login");
+  }
+});
+
+// ─── LOGOUT (revoke all sessions) ────────────────────────────
+// Bumps the user's tokenVersion so EVERY JWT issued before now (this device and
+// any others) stops verifying. The client should also drop its stored token.
+router.post("/logout", authMiddleware, async (req: AuthRequest, res: Response) => {
+  try {
+    await User.updateOne({ _id: req.userId }, { $inc: { tokenVersion: 1 } });
+    return sendSuccess(res, 200, { message: "Signed out of all sessions" });
+  } catch (e) {
+    return sendError(res, 500, "Something went wrong during logout");
   }
 });
 

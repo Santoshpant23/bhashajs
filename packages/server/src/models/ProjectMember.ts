@@ -36,6 +36,9 @@ const projectMemberSchema = new Schema({
   },
   assignedLanguages: { type: [String], default: [] }, // for translators
   inviteToken: { type: String, default: null },
+  // When the invite token stops being valid. Null for memberships created
+  // before this field existed (treated as non-expiring for back-compat).
+  inviteExpiresAt: { type: Date, default: null },
   status: {
     type: String,
     enum: ["pending", "active"],

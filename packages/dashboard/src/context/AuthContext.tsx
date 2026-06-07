@@ -61,6 +61,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   function logout() {
+    // Best-effort server-side revocation: bumps the user's tokenVersion so this
+    // token (and any other sessions) stops verifying. Fire it BEFORE clearing
+    // localStorage so the request still carries the token; don't block the UI.
+    api.post("/auth/logout").catch(() => {
+      /* revocation is best-effort — the client clears its token regardless */
+    });
     localStorage.removeItem("bhashajs_token");
     localStorage.removeItem("bhashajs_userId");
     localStorage.removeItem("bhashajs_userName");
