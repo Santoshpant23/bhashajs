@@ -11,10 +11,15 @@ import crypto from "crypto";
 
 const projectSchema = new Schema({
   name: { type: String, required: true },
+  // Owner is required for a normal project (created by a logged-in user). It is
+  // intentionally OPTIONAL so a public sandbox project (POST /api/sandbox, no
+  // auth) can be ownerless — there's no user to attach. Normal creation always
+  // sets it; the sandbox route is the only path that leaves it null.
   owner: {
     type: Schema.Types.ObjectId,
     ref: "User",
-    required: true,
+    required: false,
+    default: null,
   },
   defaultLanguage: { type: String, default: "en" },
   supportedLanguages: { type: [String], default: ["en", "hi"] },
@@ -39,6 +44,12 @@ const projectSchema = new Schema({
       return Number.isFinite(parsed) && parsed > 0 ? parsed : 5000;
     },
   },
+  // Sandbox flags — set only by POST /api/sandbox (the public, no-signup
+  // "try it instantly" project). A sandbox is ownerless, short-lived, and
+  // swept by cleanupExpiredSandboxes() once `expiresAt` passes. Normal
+  // projects leave these at their defaults (not a sandbox, never expires).
+  isSandbox: { type: Boolean, default: false },
+  expiresAt: { type: Date, default: null },
   createdAt: { type: Date, default: Date.now },
 });
 

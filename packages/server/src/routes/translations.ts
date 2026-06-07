@@ -654,7 +654,10 @@ router.put("/:id", async (req: AuthRequest, res: Response) => {
     if (member.role === "translator" && editedLang) {
       try {
         const project = await Project.findById(translation.projectId);
-        if (project && String(project.owner) !== String(req.userId)) {
+        // `owner` is nullable in the schema (sandboxes are ownerless), but a
+        // member-edited project always has one — guard so we never notify a
+        // null user and so this typechecks against the nullable owner type.
+        if (project && project.owner && String(project.owner) !== String(req.userId)) {
           await Notification.create({
             userId: project.owner,
             type: "translator_edit",

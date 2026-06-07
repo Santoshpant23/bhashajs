@@ -20,6 +20,7 @@ import commentRoutes from "./routes/comments";
 import glossaryRoutes from "./routes/glossary";
 import apiKeyRoutes from "./routes/apiKeys";
 import sdkRoutes from "./routes/sdk";
+import sandboxRoutes, { cleanupExpiredSandboxes } from "./routes/sandbox";
 import packRoutes from "./routes/packs";
 import complianceRoutes from "./routes/compliance";
 import { migrateRegisters } from "./utils/migrateRegisters";
@@ -157,6 +158,19 @@ const writeLimiter = rateLimit({
   message: { success: false, message: "Too many write requests, please slow down" },
 });
 
+// The public, no-signup sandbox mint (POST /api/sandbox) creates real DB docs
+// (a project + ~8 translations + a key) with no auth, so it's the most abusable
+// endpoint on the server. Cap it hard: 5 sandboxes per hour per IP. A genuine
+// developer trying the SDK needs one; a script trying to flood the DB is
+// stopped at five. Mounted ONLY on this route.
+const sandboxLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: "Sandbox creation limit reached — please try again later" },
+});
+
 app.use("/api", generalLimiter);
 app.use("/api/auth", authLimiter);
 app.use("/api/translations/:projectId/ai-translate", aiLimiter);
@@ -184,6 +198,12 @@ app.get("/api/health", (req, res) => {
 
 // ─── Public SDK routes (API key auth, no JWT) ───────────────
 app.use("/api/sdk", sdkRoutes);
+
+// ─── Public sandbox mint (NO auth) ──────────────────────────
+// Heavily rate-limited (sandboxLimiter, 5/hour/IP) since it creates real DB
+// docs without authentication. Lets a developer (or the /demo page) try the
+// SDK with a working bjs_ key + sample translations without signing up.
+app.use("/api/sandbox", sandboxLimiter, sandboxRoutes);
 
 // ─── Routes (JWT auth) ──────────────────────────────────────
 app.use("/api/auth", authRoutes);
@@ -284,6 +304,21 @@ async function start() {
     }
     // Seeding vertical packs is small and idempotent — safe to run each boot.
     await seedVerticalPacks();
+
+    // Sweep any sandbox projects whose 24h TTL has passed (best-effort — a
+    // failed sweep must never block boot; the next restart retries). This is a
+    // cheap indexed delete; the demo's instant-key path also relies on it so
+    // ephemeral sandboxes don't accumulate. (A Mongo TTL index on
+    // Project.expiresAt would drop the projects but NOT cascade their
+    // Translations/ApiKeys — hence this app-level cascade instead.)
+    try {
+      const removed = await cleanupExpiredSandboxes();
+      if (removed > 0) {
+        console.log(`[Sandbox] Cleaned up ${removed} expired sandbox project(s)`);
+      }
+    } catch (e) {
+      console.error("[Sandbox] Failed to clean up expired sandboxes:", e);
+    }
 
     const app = createApp();
     const port = process.env.PORT || 5000;

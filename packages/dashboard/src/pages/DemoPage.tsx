@@ -3,6 +3,7 @@
 // A demo page that uses the BhashaJS SDK to prove it works.
 // This simulates what a REAL developer would do in THEIR app.
 
+import { useEffect, useState, type ReactNode } from "react";
 import {
   I18nProvider,
   useTranslation,
@@ -15,13 +16,63 @@ import {
 // every doc tells real developers to use. NOT the projectId+JWT path, which
 // requires a logged-in admin token and would hang/404 here.
 //
-// Set VITE_DEMO_PROJECT_KEY to a PUBLIC project API key (starts with "bjs_")
-// to light up the live demo. If it's unset we render a friendly "not
-// configured" card instead of an infinite "Loading…".
+// Two ways the page gets a key:
+//   1. VITE_DEMO_PROJECT_KEY — a pinned PUBLIC project key (starts with "bjs_").
+//      When set, we use it (a curated, never-expiring demo project).
+//   2. Otherwise we mint a LIVE SANDBOX via POST /api/sandbox (no signup) and
+//      cache it in sessionStorage, so the demo is ALWAYS live with zero config.
 const DEMO_KEY = import.meta.env.VITE_DEMO_PROJECT_KEY as string | undefined;
+const API_URL = (import.meta.env.VITE_API_URL as string) || "http://localhost:5000/api";
+
+// sessionStorage cache so a refresh reuses the same sandbox key (and the same
+// 24h window) instead of minting a fresh project on every reload.
+const SANDBOX_CACHE_KEY = "bhasha_demo_sandbox";
+
+type SandboxSession = { projectKey: string; expiresAt: string };
+
+function readCachedSandbox(): SandboxSession | null {
+  try {
+    const raw = sessionStorage.getItem(SANDBOX_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as SandboxSession;
+    // Drop a cached key whose 24h window already lapsed — mint a fresh one.
+    if (!parsed.projectKey || new Date(parsed.expiresAt).getTime() <= Date.now()) {
+      sessionStorage.removeItem(SANDBOX_CACHE_KEY);
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+// A small "this is a live sandbox" banner shown when the page minted its own
+// ephemeral key (vs. running on a pinned VITE_DEMO_PROJECT_KEY).
+function SandboxBanner({ expiresAt }: { expiresAt: string }) {
+  const hoursLeft = Math.max(
+    0,
+    Math.round((new Date(expiresAt).getTime() - Date.now()) / (60 * 60 * 1000))
+  );
+  return (
+    <div style={{
+      padding: "0.6rem 2rem",
+      background: "#1a2b1a",
+      borderBottom: "1px solid #2a3a2a",
+      color: "#8fce8f",
+      fontSize: "0.85rem",
+      display: "flex",
+      alignItems: "center",
+      gap: "0.5rem",
+    }}>
+      <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#4caf50", display: "inline-block" }} />
+      Live sandbox — expires in {hoursLeft}h. No signup needed; this key is
+      driving the SDK right now.
+    </div>
+  );
+}
 
 // This is the "inner" app that uses translations
-function DemoContent() {
+function DemoContent({ sandboxExpiresAt }: { sandboxExpiresAt?: string }) {
   const { t, currentLang, isLoading } = useTranslation();
   const { dir, font, name } = useLangInfo();
 
@@ -37,6 +88,7 @@ function DemoContent() {
       background: "#0f0f12",
       color: "#e8e4df",
     }}>
+      {sandboxExpiresAt && <SandboxBanner expiresAt={sandboxExpiresAt} />}
       {/* Navbar */}
       <nav style={{
         display: "flex",
@@ -92,9 +144,10 @@ function DemoContent() {
   );
 }
 
-// Shown when no demo key is configured — so the page is never dead-on-arrival
-// with an infinite "Loading…".
-function DemoNotConfigured() {
+// A centered status card — used for the brief "minting your sandbox…" wait and
+// for the rare case where the sandbox mint fails (e.g. API down). The page is
+// never dead-on-arrival with an infinite "Loading…".
+function StatusCard({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div style={{
       minHeight: "100vh",
@@ -113,49 +166,104 @@ function DemoNotConfigured() {
         borderRadius: "12px",
         padding: "2rem",
       }}>
-        <h1 style={{ fontSize: "1.5rem", marginBottom: "0.75rem" }}>
-          Live demo isn’t configured yet
-        </h1>
-        <p style={{ color: "#9a968f", marginBottom: "1rem", lineHeight: 1.6 }}>
-          This page drives the BhashaJS SDK with a <strong>public project key</strong>{" "}
-          (the <code style={{ color: "#e07a3a" }}>x-api-key</code> path every developer uses).
-          To turn it on, set the environment variable{" "}
-          <code style={{ color: "#e07a3a" }}>VITE_DEMO_PROJECT_KEY</code> to a public
-          project key (it starts with <code style={{ color: "#e07a3a" }}>bjs_</code>) and rebuild.
-        </p>
-        <pre style={{
-          background: "#0f0f12",
-          border: "1px solid #2a2a36",
-          borderRadius: "8px",
-          padding: "1rem",
-          color: "#9a968f",
-          fontSize: "0.85rem",
-          overflowX: "auto",
-        }}>
-{`# .env
-VITE_DEMO_PROJECT_KEY=bjs_your_public_project_key`}
-        </pre>
+        <h1 style={{ fontSize: "1.5rem", marginBottom: "0.75rem" }}>{title}</h1>
+        <div style={{ color: "#9a968f", lineHeight: 1.6 }}>{children}</div>
       </div>
     </div>
   );
 }
 
 // The outer wrapper — sets up the I18nProvider via the public projectKey path.
+// When VITE_DEMO_PROJECT_KEY is set we use it directly; otherwise we mint a
+// live sandbox (no signup) so the demo is ALWAYS live.
 export default function DemoPage() {
-  // No demo key → render a clear card instead of hanging on "Loading…".
-  if (!DEMO_KEY) {
-    return <DemoNotConfigured />;
+  // A pinned demo key short-circuits all sandbox logic.
+  if (DEMO_KEY) {
+    return (
+      <I18nProvider
+        projectKey={DEMO_KEY}
+        apiUrl={API_URL}
+        defaultLang="en"
+        onLanguageChange={(lang: string) => console.log("Language changed to:", lang)}
+      >
+        <DemoContent />
+      </I18nProvider>
+    );
+  }
+  return <SandboxDemo />;
+}
+
+// No pinned key → mint (or reuse a cached) live sandbox, then drive the SDK.
+function SandboxDemo() {
+  const [session, setSession] = useState<SandboxSession | null>(() => readCachedSandbox());
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Already have a valid cached sandbox — nothing to mint.
+    if (session) return;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const res = await fetch(`${API_URL}/sandbox`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        });
+        const body = await res.json();
+        if (!res.ok || !body?.success) {
+          throw new Error(body?.message || `Sandbox request failed (${res.status})`);
+        }
+        const next: SandboxSession = {
+          projectKey: body.data.projectKey,
+          expiresAt: body.data.expiresAt,
+        };
+        try {
+          sessionStorage.setItem(SANDBOX_CACHE_KEY, JSON.stringify(next));
+        } catch {
+          /* private mode / storage full — the in-memory session still works */
+        }
+        if (!cancelled) setSession(next);
+      } catch (e: any) {
+        if (!cancelled) setError(e?.message || "Could not start the live sandbox.");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [session]);
+
+  if (error) {
+    return (
+      <StatusCard title="Couldn’t start the live sandbox">
+        <p style={{ marginBottom: "1rem" }}>{error}</p>
+        <p>
+          The demo normally mints a temporary public key automatically. You can
+          also pin one by setting{" "}
+          <code style={{ color: "#e07a3a" }}>VITE_DEMO_PROJECT_KEY</code> to a{" "}
+          <code style={{ color: "#e07a3a" }}>bjs_</code> key and rebuilding.
+        </p>
+      </StatusCard>
+    );
   }
 
-  const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
+  if (!session) {
+    return (
+      <StatusCard title="Spinning up your live sandbox…">
+        <p>Minting a temporary project key and sample translations — no signup needed.</p>
+      </StatusCard>
+    );
+  }
+
   return (
     <I18nProvider
-      projectKey={DEMO_KEY}
-      apiUrl={apiUrl}
+      projectKey={session.projectKey}
+      apiUrl={API_URL}
       defaultLang="en"
       onLanguageChange={(lang: string) => console.log("Language changed to:", lang)}
     >
-      <DemoContent />
+      <DemoContent sandboxExpiresAt={session.expiresAt} />
     </I18nProvider>
   );
 }
