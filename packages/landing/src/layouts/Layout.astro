@@ -9,11 +9,17 @@ export interface Props {
 const {
   title,
   description,
-  ogImage = "/og-image.png",
+  ogImage,
   canonical,
 } = Astro.props;
 
 const canonicalURL = canonical || new URL(Astro.url.pathname, Astro.site).toString();
+// Only advertise a large image card when a REAL raster image is provided.
+// Previously this defaulted to /og-image.png, which doesn't exist — so every
+// share rendered a broken/blank card (and SVG won't work; Twitter/FB need a
+// raster). Drop a 1200×630 PNG in public/ and pass `ogImage="/og-image.png"`
+// to light up the big card.
+const ogImageURL = ogImage ? new URL(ogImage, Astro.site).toString() : null;
 ---
 
 <!doctype html>
@@ -39,15 +45,15 @@ const canonicalURL = canonical || new URL(Astro.url.pathname, Astro.site).toStri
     <meta property="og:url" content={canonicalURL} />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
-    <meta property="og:image" content={new URL(ogImage, Astro.site).toString()} />
+    {ogImageURL && <meta property="og:image" content={ogImageURL} />}
     <meta property="og:site_name" content="bhasha-js" />
 
-    <!-- Twitter -->
-    <meta name="twitter:card" content="summary_large_image" />
+    <!-- Twitter — large card only when a real image exists, else a clean text card -->
+    <meta name="twitter:card" content={ogImageURL ? "summary_large_image" : "summary"} />
     <meta name="twitter:url" content={canonicalURL} />
     <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
-    <meta name="twitter:image" content={new URL(ogImage, Astro.site).toString()} />
+    {ogImageURL && <meta name="twitter:image" content={ogImageURL} />}
 
     <!-- Structured data — SoftwareApplication / SoftwareSourceCode -->
     <script type="application/ld+json" set:html={JSON.stringify({
@@ -262,7 +268,11 @@ const canonicalURL = canonical || new URL(Astro.url.pathname, Astro.site).toStri
   .prose strong { color: var(--text); }
 
   @media (max-width: 700px) {
-    .nav-links a:not(.btn) { display: none; }
+    /* Don't HIDE the nav links on mobile (there was no hamburger to replace
+       them) — let them wrap onto a second row so Docs / Languages / GitHub stay
+       reachable. */
+    .nav-inner { flex-wrap: wrap; row-gap: 0.5rem; }
+    .nav-links { flex-wrap: wrap; gap: 0.6rem 1rem; justify-content: center; width: 100%; font-size: 0.9rem; }
     section { padding: 3rem 0; }
   }
 </style>

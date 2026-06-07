@@ -140,16 +140,16 @@ import DocLayout from "../../components/DocLayout.astro";
 <span class="tok-fn">formatDate</span>(<span class="tok-kw">new</span> Date(), &#123; preset: <span class="tok-str">"long"</span> &#125;);         <span class="tok-cmt">// → "26 अप्रैल 2026"</span></code></pre>
 
   <h2>Step 5 — Pluralization</h2>
-  <p>Suffix your keys with <code>_one</code> and <code>_other</code>. The SDK picks the right one based on the language's CLDR rules.</p>
+  <p>Define sibling keys suffixed with <code>_one</code> and <code>_other</code>, then call <code>t()</code> with the <strong>base</strong> key (no suffix) and a <code>count</code>. The SDK picks the right form based on the language's CLDR rules.</p>
   <pre><code><span class="tok-cmt">// In your translations:</span>
 &#123;
-  <span class="tok-key">"items_count_one"</span>: <span class="tok-str">"&#123;count&#125; आइटम"</span>,
-  <span class="tok-key">"items_count_other"</span>: <span class="tok-str">"&#123;count&#125; आइटम"</span>
+  <span class="tok-key">"items_one"</span>: <span class="tok-str">"&#123;count&#125; आइटम"</span>,
+  <span class="tok-key">"items_other"</span>: <span class="tok-str">"&#123;count&#125; आइटम"</span>
 &#125;
 
-<span class="tok-cmt">// In your component:</span>
-<span class="tok-fn">t</span>(<span class="tok-str">"items_count"</span>, &#123; count: <span class="tok-str">0</span> &#125;)   <span class="tok-cmt">// Hindi → uses _one (0 is singular!)</span>
-<span class="tok-fn">t</span>(<span class="tok-str">"items_count"</span>, &#123; count: <span class="tok-str">0</span> &#125;)   <span class="tok-cmt">// English → uses _other (0 is plural)</span></code></pre>
+<span class="tok-cmt">// In your component — pass the BASE key "items", not "items_one":</span>
+<span class="tok-fn">t</span>(<span class="tok-str">"items"</span>, &#123; count: <span class="tok-str">0</span> &#125;)   <span class="tok-cmt">// Hindi → uses items_one  (0 is singular!)</span>
+<span class="tok-fn">t</span>(<span class="tok-str">"items"</span>, &#123; count: <span class="tok-str">0</span> &#125;)   <span class="tok-cmt">// English → uses items_other (0 is plural)</span></code></pre>
 
   <h2>Next steps</h2>
   <ul>

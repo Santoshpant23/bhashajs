@@ -40,7 +40,7 @@ export function useTranslation(): I18nContextValue {
     throw new Error(
       "[BhashaJS] useTranslation() was called outside of <I18nProvider>.\n" +
       "Make sure your app is wrapped:\n\n" +
-      "  <I18nProvider projectId=\"your-project-id\">\n" +
+      "  <I18nProvider projectKey=\"bjs_...\">\n" +
       "    <App />\n" +
       "  </I18nProvider>"
     );

@@ -35,7 +35,8 @@ import DocLayout from "../../components/DocLayout.astro";
   <h2>3. Deploy</h2>
   <pre><code><span class="tok-fn">chmod +x</span> deploy.sh
 ./deploy.sh you@email.com</code></pre>
-  <p>This sets up Caddy + Let's Encrypt for HTTPS, brings up the stack, and runs the database migration. Takes about 60 seconds.</p>
+  <p>This brings up the stack (nginx + bundled MongoDB), obtains a Let's Encrypt certificate via <strong>certbot</strong>, and switches nginx over to HTTPS. Takes about 60 seconds.</p>
+  <p class="tok-cmt"><em>Note: this self-host path uses nginx + certbot for TLS. The hosted service at <code>api.bhashajs.com</code> runs a slimmer server-only stack behind <strong>Caddy</strong> (automatic HTTPS) — a separate <code>docker-compose.prod.yml</code> you don't need when self-hosting.</em></p>
 
   <h2>4. Verify</h2>
   <ul>

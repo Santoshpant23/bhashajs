@@ -11,8 +11,14 @@ import {
   useLangInfo,
 } from "bhasha-js";
 
-// Replace with your actual project ID from the dashboard
-const PROJECT_ID = "YOUR_PROJECT_ID";
+// Drive the demo via the PUBLIC project key path (x-api-key) — the same path
+// every doc tells real developers to use. NOT the projectId+JWT path, which
+// requires a logged-in admin token and would hang/404 here.
+//
+// Set VITE_DEMO_PROJECT_KEY to a PUBLIC project API key (starts with "bjs_")
+// to light up the live demo. If it's unset we render a friendly "not
+// configured" card instead of an infinite "Loading…".
+const DEMO_KEY = import.meta.env.VITE_DEMO_PROJECT_KEY as string | undefined;
 
 // This is the "inner" app that uses translations
 function DemoContent() {
@@ -86,14 +92,66 @@ function DemoContent() {
   );
 }
 
-// The outer wrapper — sets up the I18nProvider
+// Shown when no demo key is configured — so the page is never dead-on-arrival
+// with an infinite "Loading…".
+function DemoNotConfigured() {
+  return (
+    <div style={{
+      minHeight: "100vh",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      background: "#0f0f12",
+      color: "#e8e4df",
+      padding: "2rem",
+      fontFamily: "system-ui, -apple-system, sans-serif",
+    }}>
+      <div style={{
+        maxWidth: "520px",
+        background: "#1e1e28",
+        border: "1px solid #2a2a36",
+        borderRadius: "12px",
+        padding: "2rem",
+      }}>
+        <h1 style={{ fontSize: "1.5rem", marginBottom: "0.75rem" }}>
+          Live demo isn’t configured yet
+        </h1>
+        <p style={{ color: "#9a968f", marginBottom: "1rem", lineHeight: 1.6 }}>
+          This page drives the BhashaJS SDK with a <strong>public project key</strong>{" "}
+          (the <code style={{ color: "#e07a3a" }}>x-api-key</code> path every developer uses).
+          To turn it on, set the environment variable{" "}
+          <code style={{ color: "#e07a3a" }}>VITE_DEMO_PROJECT_KEY</code> to a public
+          project key (it starts with <code style={{ color: "#e07a3a" }}>bjs_</code>) and rebuild.
+        </p>
+        <pre style={{
+          background: "#0f0f12",
+          border: "1px solid #2a2a36",
+          borderRadius: "8px",
+          padding: "1rem",
+          color: "#9a968f",
+          fontSize: "0.85rem",
+          overflowX: "auto",
+        }}>
+{`# .env
+VITE_DEMO_PROJECT_KEY=bjs_your_public_project_key`}
+        </pre>
+      </div>
+    </div>
+  );
+}
+
+// The outer wrapper — sets up the I18nProvider via the public projectKey path.
 export default function DemoPage() {
+  // No demo key → render a clear card instead of hanging on "Loading…".
+  if (!DEMO_KEY) {
+    return <DemoNotConfigured />;
+  }
+
   const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
   return (
     <I18nProvider
-      projectId={PROJECT_ID}
+      projectKey={DEMO_KEY}
       apiUrl={apiUrl}
-      apiToken={localStorage.getItem("bhashajs_token") || ""}
       defaultLang="en"
       onLanguageChange={(lang: string) => console.log("Language changed to:", lang)}
     >

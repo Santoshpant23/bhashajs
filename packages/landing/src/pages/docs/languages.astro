@@ -80,10 +80,10 @@ const langs = [
   <h2>Pluralization rules (CLDR)</h2>
   <p>The 14 languages split into two CLDR plural-rule groups:</p>
   <ul>
-    <li><strong>Group A — 0 AND 1 are <code>"one"</code> (singular)</strong>: Hindi, Bengali, Marathi, Gujarati, Kannada, Sinhala, Punjabi-Gurmukhi.</li>
-    <li><strong>Group B — only 1 is <code>"one"</code></strong>: English, Urdu, Tamil, Telugu, Malayalam, Nepali, Punjabi-Shahmukhi.</li>
+    <li><strong>Group A — 0 AND 1 are <code>"one"</code> (singular)</strong>: Hindi, Bengali, Marathi, Gujarati, Kannada, Sinhala, Punjabi-Gurmukhi, Punjabi-Shahmukhi.</li>
+    <li><strong>Group B — only 1 is <code>"one"</code></strong>: English, Urdu, Tamil, Telugu, Malayalam, Nepali.</li>
   </ul>
-  <p>This means <code>t("items_count", &#123; count: 0 &#125;)</code> in Hindi correctly resolves to <code>items_count_one</code>, while in English it resolves to <code>items_count_other</code>.</p>
+  <p>This means <code>t("items", &#123; count: 0 &#125;)</code> in Hindi correctly resolves to <code>items_one</code>, while in English it resolves to <code>items_other</code>.</p>
 
   <h2>Native digit numbering systems</h2>
   <p>When you pass <code>useNativeDigits: true</code> to <code>formatNumber</code>, <code>formatCurrency</code>, or <code>formatDate</code>:</p>

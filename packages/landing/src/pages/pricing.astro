@@ -1,0 +1,131 @@
+---
+import Layout from "../layouts/Layout.astro";
+import Nav from "../components/Nav.astro";
+import Footer from "../components/Footer.astro";
+
+const title = "Pricing — bhasha-js";
+const description =
+  "bhasha-js is open source and free to self-host. The hosted dashboard has a generous free tier; AI translation usage is fair-use capped because every AI call has real Vertex AI cost.";
+
+const tiers = [
+  {
+    name: "Open source",
+    tagline: "MIT-licensed. Yours forever.",
+    blurb:
+      "The SDK, server, and dashboard are all open source. Bundle your own JSON translations (Mode 1) and you need no backend, no account, and no AI at all — it's completely free.",
+    points: [
+      "Full React SDK (bhasha-js) on npm",
+      "All 14 languages, RTL, fonts, lakh/crore numbers, CLDR plurals",
+      "Bundled-translation mode — zero backend",
+      "No account, no limits, no telemetry",
+    ],
+    cta: { label: "Read the quickstart", href: "/docs/quickstart/" },
+    highlight: false,
+  },
+  {
+    name: "Self-host",
+    tagline: "Run the whole stack on your infra.",
+    blurb:
+      "Spin up the backend, dashboard, and MongoDB with one docker-compose. You bring your own AI key (Gemini or Vertex), so AI translation cost is billed directly to you — we never sit in the middle.",
+    points: [
+      "Dashboard with team review, glossary, version history",
+      "AI translation on your own Gemini / Vertex AI key",
+      "Your data stays on your servers",
+      "No per-seat or per-key fees from us",
+    ],
+    cta: { label: "Self-hosting guide", href: "/docs/self-hosting/" },
+    highlight: true,
+  },
+  {
+    name: "Hosted",
+    tagline: "We run it. You ship.",
+    blurb:
+      "The managed dashboard at app.bhashajs.com — sign up and get an API key in minutes. A generous free tier covers real projects; hosted AI translation is subject to a fair-use monthly cap because each AI call has a real Vertex AI cost.",
+    points: [
+      "Managed API + dashboard, nothing to deploy",
+      "Generous free tier for keys, languages, and members",
+      "AI translation included under a fair-use monthly cap",
+      "Translation Memory and exports (CSV / Android / iOS)",
+    ],
+    cta: { label: "Create a project", href: "https://app.bhashajs.com/register" },
+    highlight: false,
+  },
+];
+---
+
+<Layout title={title} description={description}>
+  <Nav />
+
+  <!-- HERO -->
+  <section style="padding-top: 5rem; padding-bottom: 1.5rem;">
+    <div class="container" style="text-align: center;">
+      <div style="display: inline-block; padding: 0.4rem 0.9rem; border-radius: 999px; background: rgba(255, 107, 44, 0.12); color: var(--brand-light); font-size: 0.85rem; font-weight: 600; margin-bottom: 1.5rem;">
+        Open source · Fair-use hosted AI
+      </div>
+      <h1 style="margin-bottom: 1.5rem;">Honest pricing</h1>
+      <p style="font-size: 1.2rem; max-width: 660px; margin: 0 auto; color: var(--text-dim);">
+        bhasha-js is open source and free to self-host. The hosted service has a generous free tier — but AI translation runs on Vertex AI, which costs real money per call, so hosted AI usage is capped under fair use. We'd rather be upfront about that than surprise you with a bill.
+      </p>
+    </div>
+  </section>
+
+  <!-- TIERS -->
+  <section style="padding-top: 2rem;">
+    <div class="container">
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; align-items: stretch;">
+        {tiers.map((tier) => (
+          <div
+            class="card"
+            style={`display: flex; flex-direction: column; ${tier.highlight ? "border-color: var(--brand); box-shadow: 0 0 0 1px var(--brand);" : ""}`}
+          >
+            <h3 style="margin-bottom: 0.25rem;">{tier.name}</h3>
+            <div style="color: var(--brand-light); font-size: 0.9rem; font-weight: 600; margin-bottom: 1rem;">{tier.tagline}</div>
+            <p style="margin-bottom: 1.25rem;">{tier.blurb}</p>
+            <ul style="list-style: none; padding: 0; margin: 0 0 1.5rem; display: flex; flex-direction: column; gap: 0.5rem;">
+              {tier.points.map((p) => (
+                <li style="color: var(--text-dim); font-size: 0.95rem; display: flex; gap: 0.5rem;">
+                  <span style="color: var(--success);">✓</span>
+                  <span>{p}</span>
+                </li>
+              ))}
+            </ul>
+            <a
+              href={tier.cta.href}
+              class={`btn ${tier.highlight ? "btn-primary" : "btn-secondary"}`}
+              style="margin-top: auto; text-align: center;"
+            >{tier.cta.label}</a>
+          </div>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ / BOUNDARIES -->
+  <section style="padding-top: 2.5rem;">
+    <div class="container" style="max-width: 760px;">
+      <h2 style="margin-bottom: 1.5rem;">The honest fine print</h2>
+
+      <h3 style="margin-bottom: 0.5rem;">Why isn't there a price list yet?</h3>
+      <p style="margin-bottom: 1.5rem;">
+        bhasha-js is early and the exact numbers are still being worked out. Rather than invent prices we'd have to change, the rule today is simple: <strong>self-hosting is free forever</strong>, and the <strong>hosted free tier is generous</strong>. Paid hosted plans will arrive once the limits are dialed in — existing free projects won't be rug-pulled.
+      </p>
+
+      <h3 style="margin-bottom: 0.5rem;">What does "fair-use AI cap" actually mean?</h3>
+      <p style="margin-bottom: 1.5rem;">
+        AI translations are generated with Google's Vertex AI, and each call costs us money. So hosted AI translation has a monthly request cap on the free tier. Hit the cap and your <em>existing</em> translations keep serving instantly — only new AI generations pause until the next cycle (or you self-host with your own key, where the only limit is your own cloud bill).
+      </p>
+
+      <h3 style="margin-bottom: 0.5rem;">Is anything actually free?</h3>
+      <p style="margin-bottom: 1.5rem;">
+        Yes — a lot. The entire SDK, every language, RTL, fonts, lakh/crore formatting, native digits, and CLDR plurals work with bundled translations and <strong>no account at all</strong>. You only need the hosted service if you want the managed dashboard and AI translation.
+      </p>
+
+      <div style="display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 2rem;">
+        <a href="/docs/quickstart/" class="btn btn-primary">Get started free →</a>
+        <a href="/docs/self-hosting/" class="btn btn-secondary">Self-host it</a>
+      </div>
+    </div>
+  </section>
+
+  <Footer />
+</Layout>
