@@ -59,15 +59,16 @@ export async function recordUsage(
 
   const filter = { projectId, period: currentPeriod() };
   const update = { $inc: inc, $set: { updatedAt: new Date() } };
-  try {
-    await AiUsage.updateOne(filter, update, { upsert: true });
-  } catch (e: any) {
-    // Two concurrent first-of-month upserts can race the unique
-    // { projectId, period } index — the loser throws E11000. The bucket now
-    // exists, so a single retry (a plain $inc, no upsert) always succeeds.
-    if (e?.code === 11000) {
-      await AiUsage.updateOne(filter, update);
-    } else {
+  // Retry transient conflicts so concurrent recorders never lose an increment:
+  //   E11000 (11000)     — two first-of-month upserts race the unique index;
+  //   WriteConflict (112) — concurrent $inc on the same bucket on a replica set.
+  // The $inc is idempotent-safe to retry (it applies exactly once per success).
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      await AiUsage.updateOne(filter, update, { upsert: true });
+      return;
+    } catch (e: any) {
+      if ((e?.code === 11000 || e?.code === 112) && attempt < 5) continue;
       throw e;
     }
   }

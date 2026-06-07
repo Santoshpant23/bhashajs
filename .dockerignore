@@ -13,6 +13,10 @@ coverage
 .env.*
 **/.env
 **/.env.*
+credentials/
+**/credentials/
+*sa.json
+*service-account*.json
 
 # VCS and tooling
 .git
