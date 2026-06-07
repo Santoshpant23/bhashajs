@@ -117,6 +117,19 @@ async function findEnCell(): Promise<HTMLInputElement> {
   return (await screen.findByDisplayValue(ORIGINAL_EN)) as HTMLInputElement;
 }
 
+// Find a cell by its grid position once the table has rendered. Col 0 = en,
+// col 1 = hi for the PROJECT fixture below. Does NOT key off a cell's value
+// (values change as we edit), so it stays valid after edits.
+async function findCell(col: number): Promise<HTMLInputElement> {
+  return (await waitFor(() => {
+    const el = document.querySelector<HTMLInputElement>(
+      `input[data-row="0"][data-col="${col}"]`
+    );
+    if (!el) throw new Error(`cell col ${col} not found`);
+    return el;
+  }));
+}
+
 beforeEach(() => {
   get.mockReset();
   put.mockReset();
@@ -290,5 +303,147 @@ describe("TranslationEditor — Ctrl+S then blur fires exactly ONE PUT", () => {
     // Second PUT carries the newer English value.
     const secondBody = put.mock.calls[1][1];
     expect(secondBody.translations.en.default).toBe("Hello!?");
+  });
+});
+
+// ─── Per-cell dirty tracking (cross-cell data-loss fix) ──────────────────────
+//
+// The blocker: a SINGLE global `hasUnsaved` boolean meant that when one cell
+// finished saving it cleared the flag even though ANOTHER cell was still dirty,
+// so the leave/unload guard didn't warn and the other edit was lost. Dirty
+// state must be tracked PER CELL; saving cell A must never clear cell B.
+describe("TranslationEditor — per-cell dirty tracking", () => {
+  it("keeps the unsaved indicator while another cell is still dirty after one cell saves", async () => {
+    const user = userEvent.setup();
+    render(<TranslationEditor />);
+
+    // Edit English (col 0) and let its save settle.
+    const en = await findCell(0);
+    await user.click(en);
+    await user.type(en, "!");          // "Hello!"
+    await user.tab();                  // blur → saves English
+    await waitFor(() => {
+      expect(put).toHaveBeenCalledTimes(1);
+    });
+
+    // Now edit Hindi (col 1) — it becomes dirty but is NOT saved yet.
+    const hi = await findCell(1);
+    await user.click(hi);
+    await user.type(hi, "नमस्ते");
+
+    // English's save already resolved and (with the OLD global-flag bug) would
+    // have cleared `hasUnsaved`. With per-cell tracking, Hindi is still dirty,
+    // so the unsaved indicator MUST be present.
+    await waitFor(() => {
+      expect(screen.getByTestId("unsaved-indicator")).toBeInTheDocument();
+    });
+  });
+
+  it("clears the unsaved indicator only once the LAST dirty cell is saved", async () => {
+    const user = userEvent.setup();
+    render(<TranslationEditor />);
+
+    // Save English first — one PUT, then English is clean.
+    const en = await findCell(0);
+    await user.click(en);
+    await user.type(en, "!");          // "Hello!"
+    await user.tab();                  // blur → saves English
+    await waitFor(() => {
+      expect(put).toHaveBeenCalledTimes(1);
+    });
+    // English clean, nothing else dirty → indicator gone.
+    await waitFor(() => {
+      expect(screen.queryByTestId("unsaved-indicator")).not.toBeInTheDocument();
+    });
+
+    // Now dirty Hindi (the LAST cell) — indicator returns.
+    const hi = await findCell(1);
+    await user.click(hi);
+    await user.type(hi, "नमस्ते");
+    await waitFor(() => {
+      expect(screen.getByTestId("unsaved-indicator")).toBeInTheDocument();
+    });
+
+    // Save Hindi — the last dirty cell. Now the indicator clears.
+    await user.tab();                  // blur → saves Hindi (value changed)
+    await waitFor(() => {
+      expect(put).toHaveBeenCalledTimes(2);
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId("unsaved-indicator")).not.toBeInTheDocument();
+    });
+  });
+});
+
+// ─── Autosave-on-completion (edits during an in-flight save) ─────────────────
+//
+// The in-flight guard drops a blur-save for a cell that already has a PUT in
+// flight. The newer edit stays dirty; without autosave-on-completion it would
+// need a manual second save. Fix: when the in-flight save completes and detects
+// the cell changed since the save started, it AUTO RE-SAVES the newer value —
+// a second PUT with the newer content fires without the user saving again.
+describe("TranslationEditor — autosave on in-flight completion", () => {
+  it("persists an edit typed while a save is in flight (second PUT with the newer value, no manual save)", async () => {
+    const user = userEvent.setup();
+    render(<TranslationEditor />);
+
+    // Gate the FIRST PUT so it stays in flight until we release it. This lets
+    // us type a newer value into the same cell during the in-flight window.
+    let releaseFirst!: () => void;
+    const firstResolved = new Promise<void>((r) => (releaseFirst = r));
+    let putCount = 0;
+    put.mockImplementation((url: string, body: any) => {
+      putCount += 1;
+      const savedDoc = {
+        ...freshTranslations()[0],
+        translations: body.translations,
+        source: "human",
+      };
+      const response = { data: { data: savedDoc } };
+      if (putCount === 1) {
+        // Hold the first PUT open until releaseFirst() is called.
+        return firstResolved.then(() => response);
+      }
+      return Promise.resolve(response);
+    });
+
+    const cell = await findEnCell();
+    await user.click(cell);            // baseline "Hello"
+    await user.type(cell, "!");        // "Hello!"
+
+    // Ctrl+S starts the FIRST PUT; it is now in flight (gated).
+    await user.keyboard("{Control>}s{/Control}");
+    await waitFor(() => {
+      expect(put).toHaveBeenCalledTimes(1);
+    });
+
+    // Type MORE while the first PUT is still in flight. A blur here is dropped
+    // by the in-flight guard — the edit stays dirty and must be auto re-saved.
+    await user.type(cell, "?");        // "Hello!?"
+    await user.tab();                  // blur → dropped (in-flight), still dirty
+
+    // Only one PUT so far (the gated one). The newer edit has NOT been saved yet.
+    expect(put).toHaveBeenCalledTimes(1);
+
+    // Release the first PUT. On completion the save detects the cell changed
+    // since it started and AUTO RE-SAVES the newer value — a second PUT fires.
+    releaseFirst();
+
+    await waitFor(() => {
+      expect(put).toHaveBeenCalledTimes(2);
+    });
+    // The second (auto) PUT carries the newer value — no manual save needed.
+    const secondBody = put.mock.calls[1][1];
+    expect(secondBody.translations.en.default).toBe("Hello!?");
+
+    // And it settles: no THIRD PUT (loop guard — re-save is a no-op once the
+    // value stops changing).
+    await new Promise((r) => setTimeout(r, 50));
+    expect(put).toHaveBeenCalledTimes(2);
+
+    // Once the newer value is persisted, the cell is clean → indicator gone.
+    await waitFor(() => {
+      expect(screen.queryByTestId("unsaved-indicator")).not.toBeInTheDocument();
+    });
   });
 });

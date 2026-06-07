@@ -7,6 +7,7 @@
 
 import express from "express";
 import mongoose from "mongoose";
+import { existsSync } from "fs";
 import dotenv from "dotenv";
 import cors from "cors";
 import helmet from "helmet";
@@ -64,9 +65,37 @@ function validateEnv() {
 
   // AI translation is optional at boot but the dashboard's AI/voice endpoints
   // fail at call time without a key — warn loudly rather than crash.
-  if (!process.env.GEMINI_API_KEY && String(process.env.GEMINI_USE_VERTEX).toLowerCase() !== "true") {
+  const useVertex = String(process.env.GEMINI_USE_VERTEX).toLowerCase() === "true";
+  if (!process.env.GEMINI_API_KEY && !useVertex) {
     console.warn(
       "[BhashaJS] No AI credentials set — AI translation and voice generation will fail until configured."
+    );
+  }
+
+  // Vertex preflight: if Vertex mode is on, the service-account file must exist
+  // NOW — otherwise every AI call fails at runtime with an opaque auth error.
+  // Fail fast at boot instead (self-host forgot to mount sa.json).
+  if (useVertex) {
+    const saPath = process.env.GOOGLE_APPLICATION_CREDENTIALS || "";
+    if (!saPath || !existsSync(saPath)) {
+      console.error(
+        `FATAL: GEMINI_USE_VERTEX=true but the service-account file is missing ` +
+        `(GOOGLE_APPLICATION_CREDENTIALS="${saPath || "unset"}"). Mount sa.json and set the path.`
+      );
+      process.exit(1);
+    }
+  }
+
+  // Self-host footguns: warn loudly when placeholder/insecure defaults survive
+  // from .env.example — they boot, but break invites or ship a known DB password.
+  if (/:changeme@/i.test(process.env.MONGO_CONNECTION_URL || "")) {
+    console.warn(
+      "[BhashaJS] MONGO password is still 'changeme' — set a strong MONGO_ROOT_PASSWORD before exposing this."
+    );
+  }
+  if (/example\.com/i.test(process.env.APP_URL || "")) {
+    console.warn(
+      "[BhashaJS] APP_URL is still the placeholder (example.com) — invite links will point to the wrong host. Set your real dashboard URL."
     );
   }
 }

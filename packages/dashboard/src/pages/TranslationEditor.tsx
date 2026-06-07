@@ -304,9 +304,52 @@ export default function TranslationEditor() {
   const [currentPage, setCurrentPage] = useState(1);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout>>();
 
-  // Track unsaved changes
+  // Track unsaved changes — PER CELL, not as a single global flag.
+  //
+  // The bug a global boolean caused: edit English, then edit Hindi while
+  // English is still saving; when English's PUT resolves it clears the one
+  // global flag → the leave/beforeunload guard no longer warns and the Hindi
+  // edit is silently lost. So we keep a SET of dirty cell keys
+  // (`${id}:${lang}:${register}`) and derive `hasUnsaved` from `size > 0`.
+  // Saving cell A removes ONLY A's key, never B's. Each cell-level mutation
+  // routes through `markCellDirty` / `markCellClean`, which recompute the
+  // derived flag from the set so it always reflects "is ANY cell dirty".
+  const dirtyCellsRef = useRef<Set<string>>(new Set());
   const [hasUnsaved, setHasUnsaved] = useState(false);
   const unsavedRef = useRef(false);
+  // Holds the latest `effectiveRegister` closure (assigned each render once the
+  // function is defined below). The dirty-key helper reads it so it always uses
+  // the CURRENT register, never one captured in an earlier render.
+  const effectiveRegisterRef = useRef<(lang: string) => Register>((lang) =>
+    lang === "en" ? "default" : "default"
+  );
+
+  // The register-aware dirty key for a cell. English always lives in "default"
+  // (see effectiveRegister), so the same physical cell maps to one stable key.
+  const dirtyKey = useCallback(
+    (id: string, lang: string) => `${id}:${lang}:${effectiveRegisterRef.current(lang)}`,
+    []
+  );
+  // Sync the derived `hasUnsaved` flag from the dirty set's size. Called after
+  // every add/remove so the unload guard, the goBack confirm, the register-
+  // switch confirm, and the visible indicator all see the same source of truth.
+  const syncHasUnsaved = useCallback(() => {
+    setHasUnsaved(dirtyCellsRef.current.size > 0);
+  }, []);
+  const markCellDirty = useCallback(
+    (id: string, lang: string) => {
+      dirtyCellsRef.current.add(dirtyKey(id, lang));
+      syncHasUnsaved();
+    },
+    [dirtyKey, syncHasUnsaved]
+  );
+  const markCellClean = useCallback(
+    (id: string, lang: string) => {
+      dirtyCellsRef.current.delete(dirtyKey(id, lang));
+      syncHasUnsaved();
+    },
+    [dirtyKey, syncHasUnsaved]
+  );
 
   // Add key modal
   const [showAddKey, setShowAddKey] = useState(false);
@@ -583,9 +626,16 @@ export default function TranslationEditor() {
   function effectiveRegister(lang: string): Register {
     return lang === "en" ? "default" : currentRegister;
   }
+  // Keep a ref to the latest `effectiveRegister` so the dirty-cell key helper
+  // (a stable useCallback) always computes the CURRENT register without
+  // capturing a stale `currentRegister` from an earlier render.
+  effectiveRegisterRef.current = effectiveRegister;
 
   function handleValueChange(translationId: string, lang: string, value: string) {
-    setHasUnsaved(true);
+    // Mark THIS cell dirty (per-cell), not a single global flag. The derived
+    // `hasUnsaved` follows the set's size, so a concurrent save of another cell
+    // can never clear this edit's unsaved state.
+    markCellDirty(translationId, lang);
     const reg = effectiveRegister(lang);
     setTranslations((prev) =>
       prev.map((t) => (t._id === translationId ? withValue(t, lang, reg, value) : t))
@@ -620,6 +670,9 @@ export default function TranslationEditor() {
     // failed PUT can restore it (see catch).
     let refKeyHadBaseline = false;
     let priorBaseline: string | undefined;
+    // Set in the success path when the cell diverged mid-flight — the freshest
+    // row to re-save once the in-flight guard is released (see finally).
+    let pendingResave: Translation | undefined;
 
     if (editedLang && refKey) {
       // Only guard when we have a baseline for this cell (set on focus / prior
@@ -635,6 +688,12 @@ export default function TranslationEditor() {
       // React's re-render of `translation`, so we also hard-block any concurrent
       // save for the same cell. Exactly one PUT fires per cell per in-flight
       // window; a genuine new edit after the PUT resolves still saves.
+      //
+      // BUT: a real NEW edit typed while the first PUT is still in flight must
+      // not be silently dropped. The cell stays dirty (its dirty-set key is
+      // still present), and when the in-flight save completes it detects the
+      // divergence and AUTO RE-SAVES the newer value (see the success path).
+      // So here we just skip starting a second concurrent PUT.
       if (inFlightSavesRef.current.has(refKey)) {
         return;
       }
@@ -676,9 +735,14 @@ export default function TranslationEditor() {
       // more; we must NOT clear the dirty flag (that would risk losing the newer
       // edit and, on a re-save, duplicate audit history).
       let cellIsStillSavedValue = true;
+      // The freshest row for this key — captured from inside the updater (the
+      // closure's `translation` is stale). Used to AUTO RE-SAVE the newer value
+      // if the user edited the cell while this PUT was in flight.
+      let latestRow: Translation | undefined;
       setTranslations((prev) =>
         prev.map((t) => {
           if (t._id !== translation._id) return t;
+          latestRow = t;
           if (editedLang && savedValue !== undefined) {
             cellIsStillSavedValue =
               valueAt(t, editedLang, editedRegister) === savedValue;
@@ -707,10 +771,26 @@ export default function TranslationEditor() {
         // leaves the dirty flag set below.
         originalValueRef.current[refKey] = savedValue as string;
       }
-      // Only mark clean when no newer edit landed mid-flight. A late response
-      // must never clear `hasUnsaved` for content the user has since changed.
-      if (cellIsStillSavedValue) {
-        setHasUnsaved(false);
+      // Only mark THIS cell clean when no newer edit landed mid-flight. A late
+      // response must never clear another (or this) cell's unsaved state for
+      // content the user has since changed. Per-cell, so saving cell A never
+      // touches cell B's dirty key.
+      if (editedLang && cellIsStillSavedValue) {
+        markCellClean(translation._id, editedLang);
+      } else if (editedLang && !cellIsStillSavedValue) {
+        // A NEWER edit landed on this cell while the PUT was in flight (e.g. the
+        // user kept typing, or a blur-save was dropped by the in-flight guard).
+        // The cell is still dirty. Queue an AUTO RE-SAVE of the newer value so
+        // the queued edit persists WITHOUT the user saving again. We do it in
+        // `finally` (after the in-flight guard is released) so the re-invocation
+        // isn't itself blocked as "concurrent".
+        //
+        // Loop guard: the baseline was just refreshed to `savedValue`, so the
+        // re-save's own change-guard fires the PUT only while the live value
+        // differs from what was last persisted. Once the value stops changing,
+        // a re-save persists it once and the next pass is a no-op — no infinite
+        // loop, the natural change-guard caps it.
+        pendingResave = latestRow;
       }
       fetchStats();
     } catch (e) {
@@ -728,11 +808,21 @@ export default function TranslationEditor() {
           delete originalValueRef.current[refKey];
         }
       }
-      setHasUnsaved(true);
+      // The edit was NOT persisted — keep THIS cell dirty so the leave guard
+      // still warns (per-cell, so other cells' state is untouched).
+      if (editedLang) markCellDirty(translation._id, editedLang);
       showToast(`Save failed — your edit was NOT saved: ${msg}`, "error");
     } finally {
       // Release the per-cell in-flight guard so the NEXT genuine edit can save.
       if (refKey) inFlightSavesRef.current.delete(refKey);
+      // AUTO RE-SAVE the newer value if the cell changed while this PUT was in
+      // flight. Done AFTER releasing the in-flight guard above so this re-invoke
+      // isn't dropped as "concurrent". The re-save's change-guard (baseline now
+      // === the just-persisted value) makes it a no-op once the value settles,
+      // so this can't loop forever.
+      if (pendingResave && editedLang) {
+        saveTranslation(pendingResave, editedLang);
+      }
       setTimeout(() => setSaving(null), 600);
     }
   }
@@ -1159,7 +1249,10 @@ export default function TranslationEditor() {
       const refKey = `${translation._id}:${lang}`;
       const original = originalValueRef.current[refKey] ?? "";
       handleValueChange(translation._id, lang, original);
-      setHasUnsaved(false);
+      // Escape reverts to the baseline → THIS cell is clean again. Clear only
+      // its dirty key (handleValueChange above re-added it); other cells that
+      // are still dirty must keep warning on leave.
+      markCellClean(translation._id, lang);
       // The revert above is queued, not committed — so the blur this triggers
       // would otherwise save the still-edited closure value. Flag this cell so
       // the onBlur skips its save exactly once: Escape is a true cancel.
@@ -1554,6 +1647,15 @@ export default function TranslationEditor() {
         <div className="header-actions">
           {myRole && (
             <span className={`role-badge role-${myRole}`}>{myRole}</span>
+          )}
+          {/* Unsaved indicator — driven by the PER-CELL dirty set (size > 0),
+              not a single global flag. Visible whenever ANY cell is dirty, so a
+              concurrent save of one cell can't make it disappear while another
+              cell still has unsaved edits. */}
+          {hasUnsaved && (
+            <span className="unsaved-indicator" data-testid="unsaved-indicator" title="You have unsaved changes">
+              Unsaved changes
+            </span>
           )}
           {!isViewer && (
             <button className="btn-ai" onClick={openAIModal}>

@@ -70,7 +70,8 @@ async function recordHistory(
   oldValue: string,
   newValue: string,
   source: string,
-  changedBy: string
+  changedBy: string,
+  session?: any
 ) {
   // Skip no-op edits — EXCEPT approval/rejection events, which are provenance
   // changes worth recording in the audit trail even when the text is unchanged
@@ -78,20 +79,27 @@ async function recordHistory(
   const provenanceEvent = source === "approved" || source === "rejected";
   if (oldValue === newValue && !provenanceEvent) return;
   try {
-    await TranslationHistory.create({
-      translationId,
-      projectId,
-      lang,
-      register,
-      key,
-      oldValue: oldValue || "",
-      newValue,
-      source,
-      changedBy,
-    });
+    await TranslationHistory.create(
+      [{
+        translationId,
+        projectId,
+        lang,
+        register,
+        key,
+        oldValue: oldValue || "",
+        newValue,
+        source,
+        changedBy,
+      }],
+      { session }
+    );
   } catch (e) {
-    // History recording is non-critical — don't fail the request
     console.error("[BhashaJS] Failed to record history:", e);
+    // Inside a transaction the audit event MUST be atomic with the write:
+    // propagate so the whole change rolls back rather than leaving a regulated
+    // edit live with no audit trail. Outside a transaction (no session) history
+    // stays best-effort and never fails the request.
+    if (session) throw e;
   }
 }
 
@@ -574,6 +582,11 @@ router.put("/:id", async (req: AuthRequest, res: Response) => {
       }
     }
 
+    // Captured inside the edit block, then written atomically with the save
+    // below (history AFTER persistence, both in one transaction).
+    let historyOldValue = "";
+    let historyWriteSource = "";
+    let didEditCell = false;
     if (editedLang && typeof newValue === "string") {
       const oldValue = readValue(translation.translations as any, editedLang, editedRegister) || "";
 
@@ -588,10 +601,12 @@ router.put("/:id", async (req: AuthRequest, res: Response) => {
       const isRegulated = (translation as any).regulated === true;
       const writeSource = resolveWriteSource(isRegulated, member.role === "owner");
 
-      await recordHistory(
-        translation._id, translation.projectId, editedLang, editedRegister,
-        translation.key, oldValue, newValue, writeSource, req.userId!
-      );
+      // Defer the audit event until AFTER the translation is persisted, and make
+      // the two atomic (the save+history transaction below). Recording it here,
+      // before the save, risked a PHANTOM audit event if the save then failed.
+      historyOldValue = oldValue;
+      historyWriteSource = writeSource;
+      didEditCell = true;
       writeValue(translation, "translations", editedLang, editedRegister, newValue);
       writeValue(translation, "sources", editedLang, editedRegister, writeSource);
 
@@ -648,7 +663,20 @@ router.put("/:id", async (req: AuthRequest, res: Response) => {
 
     translation.updatedAt = new Date();
 
-    await translation.save();
+    // Persist the translation and its audit event ATOMICALLY. On a replica set /
+    // Atlas they commit together (no missing or phantom audit event); on a
+    // standalone Mongo the fallback saves then records in order, and a regulated
+    // history failure propagates (it isn't silently swallowed).
+    await withTransactionOrFallback(async (session) => {
+      await translation.save({ session });
+      if (didEditCell) {
+        await recordHistory(
+          translation._id, translation.projectId, editedLang, editedRegister,
+          translation.key, historyOldValue, newValue as string, historyWriteSource, req.userId!,
+          session
+        );
+      }
+    });
 
     // Notify owner when translator edits
     if (member.role === "translator" && editedLang) {
