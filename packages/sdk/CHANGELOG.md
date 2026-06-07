@@ -2,6 +2,18 @@
 
 All notable changes to `bhasha-js` are documented here.
 
+## 0.4.0 — 2026-06-07
+
+A hardening release: correctness fixes across the engine, the CLI, and pluralization, plus stronger error handling. Backward compatible except for the plural-fallback correction noted below.
+
+### Fixed
+- **Language/register switches could wedge the loading spinner forever and throw an unhandled rejection.** v0.3 guarded `init()`, but `setLang`/`setRegister`/`setSegment` did not — a failed fetch during a switch left `isLoading: true` with no error and rejected un-awaited. They now surface the error, clear loading, and never reject.
+- **Pluralization across the fallback chain was wrong.** The plural category was computed for the *requested* language, then the key was resolved from a *fallback* language with different rules — so a Hindi `count: 0` that fell back to English rendered English's **singular** ("0 item") instead of its correct plural ("0 items"). The category is now computed per resolved language. *(Behavior change: if you relied on the old, incorrect output for a key that falls back across languages, the text will change to the correct form.)*
+- **`bhasha pull` silently generated types from the 2-key local stub** for hosted-project users. With a `projectKey` configured it now defaults to the hosted API (use `--local` to force local), and it **auto-wires the generated `.d.ts` into your `tsconfig.json`** (or prints the exact line) so the type-safe keys actually take effect.
+- **Unknown RTL language variants rendered left-to-right.** Codes outside the built-in table (e.g. `ur-IN`, `pa-Arab`) now infer `dir="rtl"` from the script instead of defaulting to LTR; `-Latn` variants stay LTR.
+- **Engine robustness (`bhasha-js/vanilla`):** a throwing subscriber no longer starves other subscribers (`emit` isolates each), and `getState()` returns a copy so a consumer can't mutate internal state.
+- The "used outside `<I18nProvider>`" error now points to `projectKey` (matching the docs), not the legacy `projectId`.
+
 ## 0.3.0 — 2026-06-01
 
 ### Added
