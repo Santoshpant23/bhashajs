@@ -15,14 +15,18 @@ const glossaryEntrySchema = new Schema({
     ref: "Project",
     required: true,
   },
+  // Length-capped: glossary terms + their translations are injected verbatim
+  // into every AI prompt, so an uncapped value is an unbounded prompt-cost (and
+  // token) vector.
   term: {
     type: String,
     required: true,
     trim: true,
+    maxlength: 128,
   },
   translations: {
     type: Map,
-    of: String,
+    of: { type: String, maxlength: 256 },
     default: {},
   },
   notes: {

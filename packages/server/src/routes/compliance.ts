@@ -119,21 +119,23 @@ router.get(
         .lean<{ supportedLanguages: string[] }>();
       const supportedLanguages = project?.supportedLanguages || [];
 
-      // Only regulated keys are auditable — the lock guarantee (and therefore
-      // the evidence a buyer needs) only applies to them.
-      const translations = await Translation.find({ projectId, regulated: true }).sort({
-        key: 1,
+      // Include EVER-regulated keys, not just currently-regulated ones: an owner
+      // can unlock a key (regulated → false), but the compliance evidence must
+      // NOT vanish from the audit. `everRegulated` is an append-only marker.
+      const translations = await Translation.find({
+        projectId,
+        $or: [{ regulated: true }, { everRegulated: true }],
+      }).sort({ key: 1 });
+
+      const liveIds = new Set(translations.map((t) => String(t._id)));
+
+      // Pull ALL of the project's history (newest-first) — we need it both to
+      // bucket history for the live keys AND to reconstruct DELETED ever-regulated
+      // keys, whose Translation doc is gone but whose history tombstone survives
+      // (a "deleted" key delete retains its history; see translations.ts DELETE).
+      const historyDocs = await TranslationHistory.find({ projectId }).sort({
+        createdAt: -1,
       });
-
-      const translationIds = translations.map((t) => t._id);
-
-      // Pull all history for these keys in ONE query, newest-first, then bucket
-      // by translationId in memory — avoids a per-key history query.
-      const historyDocs = translationIds.length
-        ? await TranslationHistory.find({ translationId: { $in: translationIds } }).sort({
-            createdAt: -1,
-          })
-        : [];
 
       // Batched approver resolution: collect every distinct changedBy id across
       // ALL history events, resolve them in a single User.find, then look up by
@@ -186,10 +188,40 @@ router.get(
           key: t.key,
           mandatedBy: (t as any).mandatedBy || "",
           ...complianceState(t.sources, supportedLanguages),
+          deleted: false,
           statuses,
           history,
         };
-      });
+      }) as any[];
+
+      // Reconstruct DELETED ever-regulated keys from their retained history
+      // tombstones: a history bucket with no live Translation but a regulated-era
+      // marker ("locked"/"deleted") in its trail. So unlocking-then-deleting a
+      // regulated key can't hide it from the audit.
+      for (const [tid, hist] of historyByTranslation) {
+        if (liveIds.has(tid)) continue;
+        if (!hist.some((h) => h.source === "locked" || h.source === "deleted")) continue;
+        keys.push({
+          key: hist[0]?.key || "(deleted key)",
+          mandatedBy: "",
+          reviewClean: false,
+          complete: false,
+          missingLanguages: [] as string[],
+          fullyApproved: false,
+          deleted: true,
+          statuses: [],
+          history: hist.map((h) => ({
+            lang: h.lang,
+            register: (h.register || DEFAULT_REGISTER) as Register,
+            oldValue: h.oldValue || "",
+            newValue: h.newValue || "",
+            source: h.source || "",
+            changedBy: resolveApprover(h.changedBy),
+            createdAt: h.createdAt,
+          })),
+        });
+      }
+      keys.sort((a, b) => String(a.key).localeCompare(String(b.key)));
 
       // ─── CSV export ───────────────────────────────────────────
       // Every regulated KEY appears (with its current review/complete state),
@@ -284,7 +316,12 @@ router.get(
         .lean<{ supportedLanguages: string[] }>();
       const supportedLanguages = project?.supportedLanguages || [];
 
-      const translations = await Translation.find({ projectId, regulated: true });
+      // Ever-regulated keys count too (an unlocked key still needs its evidence
+      // surfaced) — consistent with the /audit export.
+      const translations = await Translation.find({
+        projectId,
+        $or: [{ regulated: true }, { everRegulated: true }],
+      });
 
       let reviewClean = 0;
       let complete = 0;

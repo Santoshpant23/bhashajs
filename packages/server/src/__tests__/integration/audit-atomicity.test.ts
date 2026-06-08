@@ -186,28 +186,24 @@ describe("audit trail is atomic with the translation write", () => {
     expect((fresh.translations as any)?.hi?.default).toBe("स्वागत है");
   });
 
-  it("(d) DEFENSE: on STANDALONE, a REGULATED PUT whose history write fails FAILS the request (never silently servable)", async () => {
+  it("(d) a REGULATED write does NOT fall back when transactions are unavailable (requireTransaction) — fails, NOTHING persisted", async () => {
     const { owner, regulatedId } = await seedRegulated();
 
-    // Simulate a misconfigured standalone self-host. There is NO transaction to
-    // roll back the save, BUT because the key is regulated the recordHistory
-    // hardening (isRegulated flag) propagates the failure so the request errors
-    // loudly instead of returning 200 with a live-but-unaudited regulated cell.
+    // Simulate a deployment where transactions can't run. A regulated write is
+    // audit-critical (requireTransaction), so it must NOT rerun session-less —
+    // the error propagates and NOTHING is persisted (the round-10 bug was the
+    // fallback persisting the value while history stayed 0).
     forceStandaloneFallbackOnce();
-    vi.spyOn(TranslationHistory, "create").mockRejectedValue(
-      new Error("forced audit-write failure")
-    );
 
     const putRes = await request()
       .put(`/api/translations/${regulatedId}`)
       .set("Authorization", bearer(owner.token))
       .send({ editedLang: "hi", translations: { hi: "केवाईसी विवरण आवश्यक हैं।" } });
 
-    // The request FAILS (not a silent 200) — the operator is told the audit
-    // write didn't land. (On standalone the value may have been saved already;
-    // the contract here is "fail loudly", and the RS path above is what makes it
-    // truly atomic. No hi audit row exists.)
     expect(putRes.status).toBe(500);
+    // The value was NOT persisted (no non-transactional fallback for regulated).
+    const fresh = await Translation.findById(regulatedId).lean();
+    expect((fresh!.translations as any)?.hi?.default).toBeUndefined();
     expect(
       await TranslationHistory.countDocuments({ translationId: regulatedId, lang: "hi" })
     ).toBe(0);

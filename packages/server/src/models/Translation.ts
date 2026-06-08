@@ -50,7 +50,7 @@ const translationSchema = new Schema({
     ref: "Project",
     required: true,
   },
-  key: { type: String, required: true },
+  key: { type: String, required: true, maxlength: 256 },
   // Nested Map: lang → register → text
   translations: {
     type: Map,
@@ -88,10 +88,15 @@ const translationSchema = new Schema({
   // never reach end users on a regulated key. Set automatically on pack import
   // for items with a `mandatedBy` citation; can be toggled by project owners.
   regulated: { type: Boolean, default: false },
+  // Append-only compliance marker: set true the FIRST time `regulated` becomes
+  // true and NEVER unset. An owner can unlock a key (regulated → false) or delete
+  // it, but the compliance export still surfaces every EVER-regulated key (and
+  // its retained history tombstone) so evidence can't be hidden or destroyed.
+  everRegulated: { type: Boolean, default: false },
   // Free-form citation for the regulator/clause that mandates this string,
   // e.g. "RBI Master Directions on KYC, 2023". Surfaced to translators in the
   // dashboard so they understand why the key is locked.
-  mandatedBy: { type: String, default: "" },
+  mandatedBy: { type: String, default: "", maxlength: 500 },
   updatedAt: { type: Date, default: Date.now },
 });
 
@@ -106,6 +111,10 @@ export const MAX_CONTEXT_LEN = 2000;
 
 translationSchema.pre("save", async function () {
   const self = this as any;
+  // everRegulated is an append-only marker: once a key is regulated it stays
+  // ever-regulated forever (so unlocking can't hide it from the compliance
+  // audit). Setting it here covers EVERY create/save path uniformly.
+  if (self.regulated === true) self.everRegulated = true;
   const tr = self.translations;
   if (tr && typeof tr.forEach === "function") {
     for (const [lang, inner] of tr as Map<string, Map<string, string>>) {

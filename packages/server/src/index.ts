@@ -25,7 +25,13 @@ import sandboxRoutes, { cleanupExpiredSandboxes } from "./routes/sandbox";
 import packRoutes from "./routes/packs";
 import complianceRoutes from "./routes/compliance";
 import { migrateRegisters } from "./utils/migrateRegisters";
+import { migrateDedupUsageBuckets } from "./utils/migrateDedupUsage";
 import { seedVerticalPacks } from "./utils/seedPacks";
+// Side-effect import: registers the UsageCounter model on mongoose so the
+// critical-index build below can resolve it by name. It's otherwise only pulled
+// in transitively via utils/usage.ts; importing it here makes registration
+// explicit and independent of route-import ordering.
+import "./models/UsageCounter";
 
 dotenv.config();
 
@@ -367,38 +373,19 @@ async function start() {
     await mongoose.connect(process.env.MONGO_CONNECTION_URL || "");
     console.log("MongoDB connected successfully");
 
-    // Build all schema indexes BEFORE serving traffic. Several correctness
-    // guarantees depend on unique indexes existing — the {projectId, period} and
-    // {scope, period} usage buckets (the AI cap dedup), User.email, ApiKey.key,
-    // {projectId, key} translations. Mongoose builds indexes lazily/async after
-    // connect, so without this a burst of first-of-month upserts can race the
-    // not-yet-built unique index and create DUPLICATE buckets (getUsage would
-    // then read one and undercount, weakening the cap).
-    //
-    // We deliberately do NOT use connection.syncIndexes(): it DROPS any index not
-    // declared in a schema, which could remove an index added out-of-band (Atlas
-    // performance advisor, ops). Instead init() each model — it awaits index
-    // CREATION only (no drops). A build failure (e.g. a pre-existing duplicate
-    // from before a unique index shipped) is logged loudly but does NOT crash
-    // boot; run the one-time dedup and it builds on the next boot.
-    await Promise.all(
-      mongoose.connection.modelNames().map((name) =>
-        mongoose.connection
-          .model(name)
-          .init()
-          .catch((err: any) =>
-            console.error(`[BhashaJS] Index build failed for ${name}:`, err?.message || err)
-          )
-      )
-    );
-    console.log("Database indexes ensured");
-
-    // Run one-time migrations, gated by a stored version so the full-collection
-    // scans don't run on every restart once they've completed.
+    // ─── 1. One-time migrations (gated) ───────────────────────────
+    // Run BEFORE the index build below. This ORDER matters: a deploy with
+    // RUN_MIGRATIONS=true must collapse any pre-existing DUPLICATE usage buckets
+    // (migrateDedupUsageBuckets) FIRST, so the {projectId,period}/{scope,period}
+    // UNIQUE indexes then build cleanly instead of failing on a leftover dup.
+    // Gated by a stored version so the full-collection scans don't re-run on
+    // every restart once they've completed.
     const Meta = (await import("./models/Meta")).default;
-    // v2 adds migrateProjectCounts() — backfills User.projectCount (the atomic
-    // per-user project-quota counter) for users that predate the field.
-    const MIGRATION_VERSION = 2;
+    // v3 adds migrateDedupUsageBuckets() — collapses duplicate AiUsage/UsageCounter
+    // buckets (which would undercount usage and weaken the AI cap) before the
+    // unique index is enforced. v2 added migrateProjectCounts() — backfills
+    // User.projectCount (the atomic per-user project-quota counter).
+    const MIGRATION_VERSION = 3;
     const metaDoc = await Meta.findOne({ key: "migrationVersion" });
     const ranVersion = typeof metaDoc?.value === "number" ? metaDoc.value : 0;
     if (ranVersion < MIGRATION_VERSION) {
@@ -410,6 +397,8 @@ async function start() {
         await migrateOwnerMemberships();
         await migrateRegisters();
         await migrateProjectCounts();
+        // Must run before the critical unique-index build below.
+        await migrateDedupUsageBuckets();
         await Meta.findOneAndUpdate(
           { key: "migrationVersion" },
           { value: MIGRATION_VERSION, updatedAt: new Date() },
@@ -422,6 +411,55 @@ async function start() {
         );
       }
     }
+
+    // ─── 2. Build schema indexes BEFORE serving traffic ───────────
+    // Several correctness guarantees depend on UNIQUE indexes existing — the
+    // {projectId, period}/{scope, period} usage buckets (the AI cap), User.email,
+    // ApiKey.key, {projectId, key} translations. Mongoose builds indexes
+    // lazily/async after connect, so without this a burst of first-of-month
+    // upserts can race the not-yet-built unique index and create DUPLICATE
+    // buckets (getUsage would then read one and undercount, weakening the cap).
+    //
+    // We deliberately do NOT use connection.syncIndexes(): it DROPS any index not
+    // declared in a schema, which could remove an index added out-of-band (Atlas
+    // performance advisor, ops). Instead init() each model — it awaits index
+    // CREATION only (no drops).
+    //
+    // FAIL CLOSED on the critical models: for those whose unique index is a
+    // correctness guarantee, a build failure (e.g. a leftover duplicate) must
+    // ABORT boot, not be logged-and-ignored. Serving with a missing critical
+    // unique index silently weakens the AI cap / lets duplicate users/keys form.
+    // When this happens, run the dedup migration (RUN_MIGRATIONS=true) and it
+    // builds cleanly on the next boot. A FRESH deploy with no duplicates builds
+    // fine — init() simply succeeds.
+    //
+    // NON-critical models keep the log-and-continue behavior so a non-essential
+    // secondary index can't take down the whole server.
+    const CRITICAL_INDEX_MODELS = new Set([
+      "AiUsage",       // unique {projectId, period} — AI cap dedup
+      "UsageCounter",  // unique {scope, period}     — account/global AI cap dedup
+      "User",          // unique email
+      "ApiKey",        // unique key
+      "Translation",   // unique {projectId, key}
+    ]);
+
+    await Promise.all(
+      mongoose.connection.modelNames().map((name) => {
+        const initPromise = mongoose.connection.model(name).init();
+        if (CRITICAL_INDEX_MODELS.has(name)) {
+          // No .catch(): let a rejection propagate to start()'s try/catch, which
+          // logs the fatal error and process.exit(1). Do NOT log "ensured".
+          return initPromise;
+        }
+        // Non-critical: log loudly but don't block boot.
+        return initPromise.catch((err: any) =>
+          console.error(`[BhashaJS] Index build failed for ${name}:`, err?.message || err)
+        );
+      })
+    );
+    console.log("Database indexes ensured");
+
+    // ─── 3. Seed idempotent reference data ────────────────────────
     // Seeding vertical packs is small and idempotent — safe to run each boot.
     await seedVerticalPacks();
 

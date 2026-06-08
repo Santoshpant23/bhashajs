@@ -101,59 +101,49 @@ router.post("/", async (req: AuthRequest, res: Response) => {
     // Cap projects per account so one user can't spam thousands of projects
     // (each otherwise carries its own AI allowance). Env-tunable; 0 disables.
     //
-    // ATOMIC reservation: the old check counted projects then created — a TOCTOU
-    // race where N concurrent requests all read "under cap" and all created,
-    // blowing past the limit. Instead we reserve a slot with a single
-    // conditional increment: bump projectCount ONLY while it's still `< cap`.
-    // Concurrent requests serialize on this one document write, so at most `cap`
-    // of them ever match and increment; the rest get back null → at cap → 403.
+    // The quota reservation (conditional `$inc` on projectCount while it's `< cap`
+    // — atomic, so N concurrent requests can't all pass), the Project, and the
+    // owner ProjectMember ALL commit in ONE transaction. So a membership failure
+    // rolls back BOTH the project AND the counter increment — no orphan project,
+    // no counter drift (the round-10 audit bug: a failed membership refunded the
+    // counter but left the project, undercounting).
     const maxProjects = parseInt(process.env.MAX_PROJECTS_PER_USER || "50", 10);
     const quotaEnabled = Number.isFinite(maxProjects) && maxProjects > 0;
-    if (quotaEnabled) {
-      const reserved = await User.findOneAndUpdate(
-        { _id: req.userId, projectCount: { $lt: maxProjects } },
-        { $inc: { projectCount: 1 } },
-        { new: true }
-      );
-      if (!reserved) {
+    let project: any;
+    try {
+      await withTransactionOrFallback(async (session) => {
+        if (quotaEnabled) {
+          const reserved = await User.findOneAndUpdate(
+            { _id: req.userId, projectCount: { $lt: maxProjects } },
+            { $inc: { projectCount: 1 } },
+            { new: true, session }
+          );
+          if (!reserved) {
+            const e: any = new Error("PROJECT_LIMIT");
+            e.projectLimit = true;
+            throw e; // aborts the txn (no project, no counter bump) → 403 below
+          }
+        }
+        const [created] = await Project.create(
+          [{ name: name.trim(), owner: req.userId, defaultLanguage: defaultLanguage || "en", supportedLanguages: langs }],
+          { session }
+        );
+        project = created;
+        const user = await User.findById(req.userId).session(session ?? null);
+        await ProjectMember.create(
+          [{ projectId: created._id, userId: req.userId, email: user?.email || "", role: "owner", status: "active" }],
+          { session }
+        );
+      });
+    } catch (txErr: any) {
+      if (txErr?.projectLimit) {
         return sendError(
           res,
           403,
           `Project limit reached (${maxProjects} per account). Delete an unused project, or self-host for unlimited.`
         );
       }
-    }
-
-    // From here, a reservation may be held — if anything below throws we MUST
-    // refund it so a failed create doesn't permanently burn a quota slot.
-    let project;
-    try {
-      project = await Project.create({
-        name: name.trim(),
-        owner: req.userId,
-        defaultLanguage: defaultLanguage || "en",
-        supportedLanguages: langs,
-      });
-
-      // Auto-create owner membership
-      const user = await User.findById(req.userId);
-      await ProjectMember.create({
-        projectId: project._id,
-        userId: req.userId,
-        email: user?.email || "",
-        role: "owner",
-        status: "active",
-      });
-    } catch (createErr) {
-      if (quotaEnabled) {
-        // Best-effort refund of the reserved slot. Swallow refund errors so the
-        // original failure is what surfaces.
-        await User.updateOne(
-          { _id: req.userId },
-          { $inc: { projectCount: -1 } }
-        ).catch(() => {});
-      }
-      throw createErr;
+      throw txErr; // real failure → outer catch → 500
     }
 
     return sendSuccess(res, 201, project);

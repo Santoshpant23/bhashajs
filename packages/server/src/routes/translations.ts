@@ -74,10 +74,10 @@ async function recordHistory(
   session?: any,
   isRegulated?: boolean
 ) {
-  // Skip no-op edits — EXCEPT approval/rejection events, which are provenance
-  // changes worth recording in the audit trail even when the text is unchanged
-  // (an owner approving a pending regulated string is an auditable action).
-  const provenanceEvent = source === "approved" || source === "rejected";
+  // Skip no-op edits — EXCEPT provenance events (approve/reject and the
+  // append-only compliance events lock/unlock/delete), which are auditable
+  // actions worth recording even when the cell text is unchanged.
+  const provenanceEvent = ["approved", "rejected", "locked", "unlocked", "deleted"].includes(source);
   if (oldValue === newValue && !provenanceEvent) return;
   try {
     await TranslationHistory.create(
@@ -450,7 +450,7 @@ router.post(
           const [doc] = await Translation.create([docFields], { session });
           translation = doc;
           await recordInitialCells(doc._id, session);
-        });
+        }, { requireTransaction: true });
       } else {
         // Non-regulated: history stays best-effort — a transient glitch never
         // fails the create.
@@ -524,21 +524,26 @@ router.post(
           const writeSource = resolveWriteSource(exRegulated, bulkIsOwner);
           const oldValue = readValue(ex.translations as any, lang, register) || "";
           if (exRegulated) {
-            // Regulated cell: the value + its audit row must be ATOMIC. The cell
-            // writes go INSIDE the transaction so a transient retry re-applies
-            // them; a history failure rolls the cell back (no silent regulated
-            // write without an audit trail). A failure here propagates to the
-            // route's 500 — fail loudly rather than import unaudited regulated copy.
-            await withTransactionOrFallback(async (session) => {
-              writeValue(ex, "translations", lang, register, value);
-              writeValue(ex, "sources", lang, register, writeSource);
-              ex.updatedAt = new Date();
-              await ex.save({ session });
-              await recordHistory(
-                ex._id, projectId, lang, register, key,
-                oldValue, value, writeSource, req.userId!, session, true
-              );
-            });
+            // Regulated cell: value + audit row ATOMIC, and audit-critical so it
+            // never falls back to a non-transactional path. Re-fetch INSIDE the
+            // transaction so oldValue is the real committed predecessor (correct
+            // chain under concurrency); a history failure rolls the cell back.
+            await withTransactionOrFallback(
+              async (session) => {
+                const fresh = await Translation.findById(ex._id).session(session ?? null);
+                if (!fresh) return;
+                const freshOld = readValue(fresh.translations as any, lang, register) || "";
+                writeValue(fresh, "translations", lang, register, value);
+                writeValue(fresh, "sources", lang, register, writeSource);
+                fresh.updatedAt = new Date();
+                await fresh.save({ session });
+                await recordHistory(
+                  fresh._id, projectId, lang, register, key,
+                  freshOld, value, writeSource, req.userId!, session, true
+                );
+              },
+              { requireTransaction: true }
+            );
           } else {
             writeValue(ex, "translations", lang, register, value);
             writeValue(ex, "sources", lang, register, writeSource);
@@ -632,103 +637,113 @@ router.put("/:id", async (req: AuthRequest, res: Response) => {
       }
     }
 
-    // Captured inside the edit block, then written atomically with the save
-    // below (history AFTER persistence, both in one transaction).
-    let historyOldValue = "";
-    let historyWriteSource = "";
-    let didEditCell = false;
-    if (editedLang && typeof newValue === "string") {
-      const oldValue = readValue(translation.translations as any, editedLang, editedRegister) || "";
+    // The edit's INTENTS, captured outside; the read-modify-write happens INSIDE
+    // the transaction (re-fetching with the session) so concurrent edits to the
+    // same cell form a REAL audit chain — each attempt (incl. a WriteConflict
+    // retry) reads the actually-committed predecessor, not a value captured
+    // before the transaction (the round-10 audit bug: 10 concurrent edits all
+    // chained off the same stale oldValue).
+    const contextIntent = context !== undefined ? (context?.trim() ?? "") : undefined;
+    const mandatedByIntent =
+      typeof req.body.mandatedBy === "string" ? req.body.mandatedBy.trim() : undefined;
+    const regulatedIntent =
+      typeof req.body.regulated === "boolean" && member.role === "owner"
+        ? req.body.regulated
+        : undefined;
+    const editorIsOwner = member.role === "owner";
 
-      // ─── Compliance lock on WRITE ───────────────────────────────────────
-      // On a regulated key, only an owner (the approval authority) may publish
-      // a cell directly. A non-owner's edit is still written, but stamped
-      // "pending" so the SDK's compliance gate (pickSafe in routes/sdk.ts,
-      // which serves only "human"/"approved") holds it back until an owner
-      // approves it via /review. Previously every edit was stamped "human"
-      // with no `regulated` check, so a translator's save went live instantly
-      // — silently defeating the entire compliance-lock guarantee.
-      const isRegulated = (translation as any).regulated === true;
-      const writeSource = resolveWriteSource(isRegulated, member.role === "owner");
+    // Audit-critical when the key is (or was ever) regulated, or is being locked:
+    // such a write must NEVER fall back to a non-transactional path that could
+    // persist the value without its audit row.
+    const auditCritical =
+      (translation as any).regulated === true ||
+      (translation as any).everRegulated === true ||
+      regulatedIntent === true;
 
-      // Defer the audit event until AFTER the translation is persisted, and make
-      // the two atomic (the save+history transaction below). Recording it here,
-      // before the save, risked a PHANTOM audit event if the save then failed.
-      historyOldValue = oldValue;
-      historyWriteSource = writeSource;
-      didEditCell = true;
-      writeValue(translation, "translations", editedLang, editedRegister, newValue);
-      writeValue(translation, "sources", editedLang, editedRegister, writeSource);
+    let resultDoc: any = translation;
+    let tmCapture: { sourceText: string; newValue: string } | null = null;
 
-      // Translation-memory flywheel: capture every human-verified CORRECTION
-      // (previously TM was only written on /review approval, missing the most
-      // common signal — a human editing a cell). Source language is the
-      // project's default (not hardcoded "en"), so non-English-source projects
-      // also feed the corpus. Held (pending) regulated edits and source-language
-      // edits are skipped; TM capture must never fail the edit.
-      if (writeSource === "human" && newValue.trim()) {
-        try {
-          const proj = await Project.findById(translation.projectId);
-          const sourceLang = proj?.defaultLanguage || "en";
-          if (editedLang !== sourceLang) {
-            const sourceText = readValue(
-              translation.translations as any,
-              sourceLang,
-              DEFAULT_REGISTER
-            );
-            if (sourceText && sourceText.trim()) {
-              await TranslationMemory.findOneAndUpdate(
-                { projectId: translation.projectId, lang: editedLang, register: editedRegister, sourceText },
-                {
-                  translatedText: newValue,
-                  key: translation.key,
-                  context: translation.context || undefined,
-                  createdAt: new Date(),
-                },
-                { upsert: true }
-              );
+    await withTransactionOrFallback(
+      async (session) => {
+        const fresh = await Translation.findById(id).session(session ?? null);
+        if (!fresh) throw new Error("Translation vanished mid-edit");
+        const wasRegulated = (fresh as any).regulated === true;
+
+        // Scalar field changes.
+        if (contextIntent !== undefined) fresh.context = contextIntent;
+        if (mandatedByIntent !== undefined) (fresh as any).mandatedBy = mandatedByIntent;
+        let lockEvent: "locked" | "unlocked" | null = null;
+        if (regulatedIntent !== undefined) {
+          if (regulatedIntent !== wasRegulated) lockEvent = regulatedIntent ? "locked" : "unlocked";
+          (fresh as any).regulated = regulatedIntent;
+          if (regulatedIntent) (fresh as any).everRegulated = true; // append-only marker
+        }
+
+        // Cell edit — oldValue read from the FRESH (committed) doc.
+        let cellOld = "";
+        let cellSource = "";
+        const editing = !!editedLang && typeof newValue === "string";
+        if (editing) {
+          // On a regulated key only an owner publishes directly; a non-owner's
+          // edit is stamped "pending" so the SDK gate holds it for review.
+          const effRegulated = (fresh as any).regulated === true;
+          cellSource = resolveWriteSource(effRegulated, editorIsOwner);
+          cellOld = readValue(fresh.translations as any, editedLang, editedRegister) || "";
+          writeValue(fresh, "translations", editedLang, editedRegister, newValue as string);
+          writeValue(fresh, "sources", editedLang, editedRegister, cellSource);
+        }
+
+        fresh.updatedAt = new Date();
+        const isRegNow =
+          (fresh as any).regulated === true || (fresh as any).everRegulated === true;
+
+        await fresh.save({ session });
+
+        if (editing) {
+          await recordHistory(
+            fresh._id, fresh.projectId, editedLang, editedRegister, fresh.key,
+            cellOld, newValue as string, cellSource, req.userId!, session, isRegNow
+          );
+          // Stage the TM-flywheel write for AFTER commit (best-effort; must never
+          // roll back the edit). Only human-verified, non-source-lang cells feed it.
+          if (cellSource === "human" && (newValue as string).trim()) {
+            const proj = await Project.findById(translation.projectId).session(session ?? null);
+            const sourceLang = proj?.defaultLanguage || "en";
+            if (editedLang !== sourceLang) {
+              const sourceText = readValue(fresh.translations as any, sourceLang, DEFAULT_REGISTER);
+              if (sourceText && sourceText.trim()) {
+                tmCapture = { sourceText, newValue: newValue as string };
+              }
             }
           }
-        } catch (_) {
-          /* non-critical */
         }
-      }
-    }
 
-    // Row-level `source` is no longer client-controllable. Per-cell sources
-    // are stamped above ("human" for the edited cell). The legacy row-level
-    // field stays whatever the create/import path set it to. AI drafts go
-    // through /ai-translate, approvals through /review.
-    if (context !== undefined) translation.context = context?.trim();
+        // Append-only lock/unlock evidence event (recorded even with no cell
+        // edit). lang "*" denotes a KEY-LEVEL event (not a specific cell).
+        if (lockEvent) {
+          await recordHistory(
+            fresh._id, fresh.projectId, editedLang || "*", editedRegister, fresh.key,
+            "", lockEvent === "locked" ? `locked: ${(fresh as any).mandatedBy || ""}`.trim() : "unlocked",
+            lockEvent, req.userId!, session, true
+          );
+        }
 
-    // Compliance lock — owner-only flip. mandatedBy citation can be edited by
-    // any non-viewer (translators may want to add the regulator clause they
-    // found while translating), but only owners can lock/unlock a key.
-    if (typeof req.body.mandatedBy === "string") {
-      (translation as any).mandatedBy = req.body.mandatedBy.trim();
-    }
-    if (typeof req.body.regulated === "boolean" && member.role === "owner") {
-      (translation as any).regulated = req.body.regulated;
-    }
+        resultDoc = fresh;
+      },
+      { requireTransaction: auditCritical }
+    );
 
-    translation.updatedAt = new Date();
-
-    // Persist the translation and its audit event ATOMICALLY. On a replica set /
-    // Atlas they commit together (no missing or phantom audit event); on a
-    // standalone Mongo the fallback saves then records in order, and a regulated
-    // history failure propagates (it isn't silently swallowed) via the
-    // isRegulated flag below.
-    const keyIsRegulated = (translation as any).regulated === true;
-    await withTransactionOrFallback(async (session) => {
-      await translation.save({ session });
-      if (didEditCell) {
-        await recordHistory(
-          translation._id, translation.projectId, editedLang, editedRegister,
-          translation.key, historyOldValue, newValue as string, historyWriteSource, req.userId!,
-          session, keyIsRegulated
+    // Translation-memory flywheel — best-effort, POST-commit.
+    if (tmCapture) {
+      try {
+        const cap = tmCapture as { sourceText: string; newValue: string };
+        await TranslationMemory.findOneAndUpdate(
+          { projectId: translation.projectId, lang: editedLang, register: editedRegister, sourceText: cap.sourceText },
+          { translatedText: cap.newValue, key: resultDoc.key, context: resultDoc.context || undefined, createdAt: new Date() },
+          { upsert: true }
         );
-      }
-    });
+      } catch (_) { /* non-critical */ }
+    }
 
     // Notify owner when translator edits
     if (member.role === "translator" && editedLang) {
@@ -748,7 +763,7 @@ router.put("/:id", async (req: AuthRequest, res: Response) => {
       } catch (_) { /* non-critical */ }
     }
 
-    return sendSuccess(res, 200, translation);
+    return sendSuccess(res, 200, resultDoc);
   } catch (e) {
     return sendError(res, 500, "Failed to update translation");
   }
@@ -777,14 +792,28 @@ router.delete("/:id", async (req: AuthRequest, res: Response) => {
       return sendError(res, 403, "Only project owners can delete translations");
     }
 
-    // Delete the key and ALL its dependents atomically (or, on a standalone
-    // Mongo, children-before-parent). Previously only history was cleaned up,
-    // leaving comments orphaned.
-    await withTransactionOrFallback(async (session) => {
-      await Comment.deleteMany({ translationId: id }, { session });
-      await TranslationHistory.deleteMany({ translationId: id }, { session });
-      await Translation.deleteOne({ _id: id }, { session });
-    });
+    // Delete the key and its dependents atomically. For an EVER-regulated key the
+    // history is COMPLIANCE EVIDENCE: it's retained as a tombstone (not deleted)
+    // and a "deleted" event is recorded, so the audit trail can't be destroyed by
+    // unlocking-then-deleting. Non-regulated keys keep the full cascade.
+    const everReg =
+      (translation as any).everRegulated === true || (translation as any).regulated === true;
+    await withTransactionOrFallback(
+      async (session) => {
+        await Comment.deleteMany({ translationId: id }, { session });
+        if (everReg) {
+          // lang "*" = a KEY-LEVEL event (the whole key was deleted).
+          await recordHistory(
+            translation._id, translation.projectId, "*", DEFAULT_REGISTER, translation.key,
+            "", "deleted", "deleted", req.userId!, session, true
+          );
+        } else {
+          await TranslationHistory.deleteMany({ translationId: id }, { session });
+        }
+        await Translation.deleteOne({ _id: id }, { session });
+      },
+      { requireTransaction: everReg }
+    );
 
     return sendSuccess(res, 200, { message: "Translation deleted" });
   } catch (e) {
@@ -936,14 +965,21 @@ router.post(
         translatedText: m.translatedText,
       }));
 
-      // Fetch glossary entries for target language
-      const glossaryEntries = await GlossaryEntry.find({ projectId });
-      const glossary: GlossaryTerm[] = glossaryEntries
-        .filter((g) => g.translations?.get(targetLang))
-        .map((g) => ({
-          term: g.term,
-          translation: g.translations.get(targetLang)!,
-        }));
+      // Glossary terms + translations are injected verbatim into EVERY AI prompt,
+      // so bound both the count AND the cumulative size — otherwise a project with
+      // thousands of (now length-capped) entries still balloons the prompt cost.
+      const GLOSSARY_MAX_ENTRIES = 200;
+      const GLOSSARY_MAX_CHARS = 20000;
+      const glossaryEntries = await GlossaryEntry.find({ projectId }).limit(GLOSSARY_MAX_ENTRIES);
+      const glossary: GlossaryTerm[] = [];
+      let glossaryChars = 0;
+      for (const g of glossaryEntries) {
+        const tr = g.translations?.get(targetLang);
+        if (!tr) continue;
+        glossaryChars += g.term.length + tr.length;
+        if (glossaryChars > GLOSSARY_MAX_CHARS) break;
+        glossary.push({ term: g.term, translation: tr });
+      }
 
       const aiProvider = getAIProvider();
       const targetLangName = langNames[targetLang] || targetLang;
@@ -978,19 +1014,25 @@ router.post(
         try {
           if (tRegulated) {
             // Regulated key: the AI draft cell + its audit row commit ATOMICALLY
-            // (writes INSIDE the txn so a transient retry re-applies them) — a
-            // regulated draft never persists without its audit trail.
-            await withTransactionOrFallback(async (session) => {
-              writeValue(t, "translations", targetLang, targetRegister, aiResults[t.key]);
-              writeValue(t, "sources", targetLang, targetRegister, "ai");
-              t.source = "ai";
-              t.updatedAt = new Date();
-              await t.save({ session });
-              await recordHistory(
-                t._id, projectId, targetLang, targetRegister, t.key,
-                oldValue, aiResults[t.key], "ai", req.userId!, session, true
-              );
-            });
+            // and audit-critically (never falls back). Re-fetch INSIDE the txn so
+            // oldValue is the real committed predecessor (correct chain).
+            await withTransactionOrFallback(
+              async (session) => {
+                const fresh = await Translation.findById(t._id).session(session ?? null);
+                if (!fresh) throw new Error("key vanished mid-translate");
+                const freshOld = readValue(fresh.translations as any, targetLang, targetRegister) || "";
+                writeValue(fresh, "translations", targetLang, targetRegister, aiResults[t.key]);
+                writeValue(fresh, "sources", targetLang, targetRegister, "ai");
+                fresh.source = "ai";
+                fresh.updatedAt = new Date();
+                await fresh.save({ session });
+                await recordHistory(
+                  fresh._id, projectId, targetLang, targetRegister, fresh.key,
+                  freshOld, aiResults[t.key], "ai", req.userId!, session, true
+                );
+              },
+              { requireTransaction: true }
+            );
           } else {
             writeValue(t, "translations", targetLang, targetRegister, aiResults[t.key]);
             writeValue(t, "sources", targetLang, targetRegister, "ai");
@@ -1117,50 +1159,46 @@ router.post("/:id/review", async (req: AuthRequest, res: Response) => {
       return sendError(res, 400, `No translation exists for "${lang}" at register "${register}"`);
     }
 
-    const keyIsRegulated = (translation as any).regulated === true;
-
-    // Mutate the in-memory document for the chosen action. The audit-history
-    // write is DEFERRED until after the save below so the two are atomic — no
-    // pre-save history event (which would be a PHANTOM approval if the save then
-    // failed) and no out-of-transaction approval audit (which could leave an
-    // approved-but-unaudited, servable cell).
-    if (action === "approve") {
-      writeValue(translation, "sources", lang, register, "approved");
-    } else {
-      // Reject: remove only this (lang, register) cell.
-      const trMap = translation.translations as any;
-      const srMap = translation.sources as any;
-      if (trMap instanceof Map) {
-        const inner = trMap.get(lang);
-        if (inner instanceof Map) inner.delete(register);
-      }
-      if (srMap instanceof Map) {
-        const inner = srMap.get(lang);
-        if (inner instanceof Map) inner.delete(register);
-      }
-      translation.markModified("translations");
-      translation.markModified("sources");
-    }
-
-    translation.updatedAt = new Date();
-
-    // Persist the source/cell change and its audit event ATOMICALLY — mirrors
-    // the PUT path. On a replica set / Atlas they commit together; on a
-    // standalone Mongo the fallback saves then records in order, and because the
-    // review action is itself the regulated approval/rejection, a history
-    // failure propagates (isRegulated flag) rather than leaving an approved cell
-    // with no audit trail.
-    const historyOld = translatedValue;
-    const historyNew = action === "approve" ? translatedValue : "";
     const historySource = action === "approve" ? "approved" : "rejected";
-    await withTransactionOrFallback(async (session) => {
-      await translation.save({ session });
-      await recordHistory(
-        translation._id, translation.projectId, lang, register, translation.key,
-        historyOld, historyNew, historySource, req.userId!,
-        session, keyIsRegulated
-      );
-    });
+
+    // Read-modify-write INSIDE one transaction: re-fetch with the session so a
+    // concurrent review reads the actually-committed state, the source flip +
+    // its audit row commit atomically, and a review (a provenance action) never
+    // falls back to a non-transactional path that could leave an approved-but-
+    // unaudited servable cell.
+    let reviewResult: any = translation;
+    await withTransactionOrFallback(
+      async (session) => {
+        const fresh = await Translation.findById(translation._id).session(session ?? null);
+        if (!fresh) throw new Error("Translation vanished mid-review");
+        const before = readValue(fresh.translations as any, lang, register) || "";
+        if (action === "approve") {
+          writeValue(fresh, "sources", lang, register, "approved");
+        } else {
+          // Reject: remove only this (lang, register) cell.
+          const trMap = fresh.translations as any;
+          const srMap = fresh.sources as any;
+          if (trMap instanceof Map) {
+            const inner = trMap.get(lang);
+            if (inner instanceof Map) inner.delete(register);
+          }
+          if (srMap instanceof Map) {
+            const inner = srMap.get(lang);
+            if (inner instanceof Map) inner.delete(register);
+          }
+          fresh.markModified("translations");
+          fresh.markModified("sources");
+        }
+        fresh.updatedAt = new Date();
+        await fresh.save({ session });
+        await recordHistory(
+          fresh._id, fresh.projectId, lang, register, fresh.key,
+          before, action === "approve" ? before : "", historySource, req.userId!, session, true
+        );
+        reviewResult = fresh;
+      },
+      { requireTransaction: true }
+    );
 
     // Translation-memory flywheel: an approved pair feeds the corpus. This is a
     // SEPARATE-document write kept OUTSIDE the audit transaction and best-effort
@@ -1193,7 +1231,7 @@ router.post("/:id/review", async (req: AuthRequest, res: Response) => {
 
     return sendSuccess(res, 200, {
       message: `Translation ${action === "approve" ? "approved" : "rejected"} for ${lang} (${register})`,
-      translation,
+      translation: reviewResult,
     });
   } catch (e) {
     return sendError(res, 500, "Failed to review translation");
