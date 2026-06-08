@@ -16,13 +16,64 @@ import { requireProjectRole, ProjectAuthRequest } from "../middleware/projectAut
 import VerticalPack from "../models/VerticalPack";
 import Project from "../models/Project";
 import Translation from "../models/Translation";
+import TranslationHistory from "../models/TranslationHistory";
 import { sendSuccess, sendError } from "../utils/response";
 import { validateRequired } from "../utils/validate";
-import { coerceRegister, readValue, writeValue } from "../utils/registers";
+import { coerceRegister, readValue, writeValue, Register } from "../utils/registers";
 import { isValidRegister } from "../models/Translation";
+import { withTransactionOrFallback } from "../utils/transaction";
 
 const router = Router();
 router.use(authMiddleware);
+
+// ─── Helper: record a history entry ─────────────────────────
+// A local twin of routes/translations.ts:recordHistory so a pack import stamps
+// the SAME immutable audit rows every other write path does. Kept self-contained
+// (translations.ts does not export its copy) and deliberately identical in its
+// failure contract:
+//   - Inside a transaction (session present): a failed insert propagates so the
+//     value write rolls back with it — no value-without-audit and no phantom row.
+//   - On a REGULATED key WITHOUT a session (standalone-fallback self-host): still
+//     propagate, so the request FAILS LOUDLY rather than leaving a regulated pack
+//     cell live with no audit trail (the compliance "guaranteed audit trail").
+//   - Non-regulated, session-less: best-effort — a history hiccup never fails the
+//     import.
+async function recordHistory(
+  translationId: any,
+  projectId: any,
+  lang: string,
+  register: Register,
+  key: string,
+  oldValue: string,
+  newValue: string,
+  source: string,
+  changedBy: string,
+  session?: any,
+  isRegulated?: boolean
+) {
+  // Pack imports only ever write a real new value into a cell (never a no-op
+  // approval event), so the simple no-op guard is enough.
+  if (oldValue === newValue) return;
+  try {
+    await TranslationHistory.create(
+      [{
+        translationId,
+        projectId,
+        lang,
+        register,
+        key,
+        oldValue: oldValue || "",
+        newValue,
+        source,
+        changedBy,
+      }],
+      { session }
+    );
+  } catch (e) {
+    console.error("[BhashaJS] Failed to record pack-import history:", e);
+    if (session || isRegulated) throw e;
+  }
+}
 
 // ─── LIST PACKS ─────────────────────────────────────────────
 // Browseable catalog. Returns metadata only — items are fetched on demand
@@ -86,6 +137,13 @@ router.post(
       let created = 0;
       let updated = 0;
       let skippedExisting = 0;
+      // A REGULATED item whose value persisted but whose audit row could not be
+      // written is NOT silently imported: its transaction rolls back (or, on a
+      // standalone self-host with no transaction, recordHistory propagates) and
+      // we count it here as a failed item and CONTINUE — one bad item must not
+      // abort an otherwise-good multi-item import. The count is surfaced in the
+      // response so the caller can see (and retry) the shortfall.
+      let failed = 0;
       const skippedLangs = new Set<string>();
 
       for (const item of pack.items as any[]) {
@@ -124,7 +182,20 @@ router.post(
           }
         }
 
-        let touched = false;
+        // Plan the cell writes WITHOUT mutating the doc yet. We apply them
+        // inside the transaction callback below so a transient transaction retry
+        // re-persists them: connection.transaction() RESETS the document's
+        // modified state between retries, so a write applied before the callback
+        // would be lost on the second attempt (and recordHistory would still log
+        // it → a phantom audit row). Capturing old→new here also lets each
+        // history event mirror the actual change.
+        const cellWrites: {
+          lang: string;
+          register: Register;
+          oldValue: string;
+          newValue: string;
+          cellSource: string;
+        }[] = [];
 
         for (const [lang, registerMap] of langEntries) {
           if (!supportedSet.has(lang)) {
@@ -144,30 +215,84 @@ router.post(
               skippedExisting++;
               continue;
             }
-            writeValue(existing, "translations", lang, coerceRegister(register), value);
             // Non-regulated pack strings are pre-vetted by the pack author →
             // "approved". But a REGULATED key legally requires the project's own
             // compliance review: stamp it "pending" so the owner must approve it
             // in-app before the SDK will serve it (the pack author is not the
             // project's compliance authority).
             const cellSource = existing.regulated ? "pending" : "approved";
-            writeValue(existing, "sources", lang, coerceRegister(register), cellSource);
-            touched = true;
+            cellWrites.push({
+              lang,
+              register: coerceRegister(register),
+              oldValue: (current as string) || "",
+              newValue: value,
+              cellSource,
+            });
           }
         }
 
-        if (touched) {
-          existing.updatedAt = new Date();
-          await existing.save();
+        if (cellWrites.length === 0) continue;
+
+        const isRegulated = existing.regulated === true;
+        const target = existing; // non-null inside the closure
+        // The save and EVERY history row for this item commit (or roll back)
+        // together. For a regulated item, a history failure either rolls back the
+        // transaction (replica set) or — on a standalone self-host with no
+        // transaction — propagates out of recordHistory (isRegulated=true), so we
+        // never end up with a live regulated cell that has no audit trail. The
+        // cell writes live INSIDE the callback so a transaction retry re-applies
+        // them after connection.transaction() resets the doc.
+        try {
+          await withTransactionOrFallback(async (session) => {
+            for (const w of cellWrites) {
+              writeValue(target, "translations", w.lang, w.register, w.newValue);
+              writeValue(target, "sources", w.lang, w.register, w.cellSource);
+            }
+            target.updatedAt = new Date();
+            await target.save({ session });
+            // children-before-parent ordering is moot here (save then history),
+            // but the session couples them — both land or neither does.
+            for (const w of cellWrites) {
+              await recordHistory(
+                target._id,
+                target.projectId,
+                w.lang,
+                w.register,
+                target.key,
+                w.oldValue,
+                w.newValue,
+                "human",
+                req.userId!,
+                session,
+                isRegulated
+              );
+            }
+          });
           if (isNew) created++; else updated++;
+        } catch (itemErr: any) {
+          // One item's atomic failure (a regulated item whose audit write could
+          // not commit) must NOT abort the whole import. Count it and move on;
+          // its value did not persist (RS rollback) or its request half-failed
+          // loudly (standalone) — either way it's not a silent unaudited cell.
+          console.error(
+            `[BhashaJS] Pack import: failed to persist item "${item.key}" atomically:`,
+            itemErr?.message
+          );
+          failed++;
+          // A brand-new doc was created above before any cell write; if its only
+          // write attempt failed, leave it empty (no cells, no history) — it is
+          // an inert placeholder, never a populated-but-unaudited regulated key.
         }
       }
 
       return sendSuccess(res, 200, {
-        message: `Imported "${pack.name}" — ${created} new keys, ${updated} keys updated`,
+        message:
+          `Imported "${pack.name}" — ${created} new keys, ${updated} keys updated` +
+          (failed ? `, ${failed} failed` : ""),
         created,
         updated,
         skippedExisting,
+        failed,
         skippedLangs: Array.from(skippedLangs),
       });
     } catch (e: any) {

@@ -161,9 +161,13 @@ export async function refundUsage(
 // "forever free" service needs two more layers, both env-tunable:
 //   - per-ACCOUNT  : AI_ACCOUNT_MONTHLY_CAP — one owner's total across all their
 //                    projects (default 5000). Stops the multi-project multiplier.
-//   - GLOBAL       : AI_GLOBAL_MONTHLY_CAP — instance-wide hard ceiling (default
-//                    100000). The kill-switch that bounds the maintainer's total
-//                    Vertex/Gemini bill no matter what.
+//   - GLOBAL       : AI_GLOBAL_MONTHLY_CAP — instance-wide ceiling on AI KEYS
+//                    service-wide (default 100000): the kill-switch. Keys are the
+//                    primary cost driver and, with the per-cell text limits in
+//                    models/Translation.ts (MAX_CELL_TEXT_LEN), each key's token
+//                    cost is bounded — so this keeps the monthly bill in a
+//                    predictable range. It is a key-count ceiling, NOT an exact
+//                    dollar guarantee (a provider retry can re-bill a batch).
 // Set either to 0 to DISABLE it (e.g. self-hosting with your own key = unlimited).
 
 export type BlockedScope = "project" | "account" | "global";

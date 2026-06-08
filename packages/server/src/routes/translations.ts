@@ -414,7 +414,7 @@ router.post(
       const incomingMandatedBy =
         typeof req.body.mandatedBy === "string" ? req.body.mandatedBy.trim() : "";
 
-      const translation = await Translation.create({
+      const docFields = {
         projectId: new mongoose.Types.ObjectId(projectId as string),
         key: key.trim(),
         translations: normalized,
@@ -423,18 +423,39 @@ router.post(
         sources: sourcesMap,
         regulated: incomingRegulated,
         mandatedBy: incomingMandatedBy,
-      });
+      };
 
-      // Record history for each initial (lang, register) cell
-      for (const [lang, langMap] of Object.entries(normalized)) {
-        for (const [reg, value] of Object.entries(langMap)) {
-          if (value.trim()) {
-            await recordHistory(
-              translation._id, projectId, lang, reg as Register, key.trim(),
-              "", value, "human", req.userId!
-            );
+      // Record history for each initial (lang, register) cell.
+      const recordInitialCells = async (docId: any, session?: any) => {
+        for (const [lang, langMap] of Object.entries(normalized)) {
+          for (const [reg, value] of Object.entries(langMap)) {
+            if (value.trim()) {
+              await recordHistory(
+                docId, projectId, lang, reg as Register, key.trim(),
+                "", value, "human", req.userId!, session, incomingRegulated
+              );
+            }
           }
         }
+      };
+
+      let translation: any;
+      if (incomingRegulated) {
+        // Regulated key: the create AND its audit history must be ATOMIC, so a
+        // regulated cell can never persist without its guaranteed trail (this was
+        // the audit gap — create wrote history out-of-transaction, swallowing
+        // failures). On a replica set both commit/roll back together; on a
+        // standalone fallback a regulated history failure propagates.
+        await withTransactionOrFallback(async (session) => {
+          const [doc] = await Translation.create([docFields], { session });
+          translation = doc;
+          await recordInitialCells(doc._id, session);
+        });
+      } else {
+        // Non-regulated: history stays best-effort — a transient glitch never
+        // fails the create.
+        translation = await Translation.create(docFields);
+        await recordInitialCells(translation._id);
       }
 
       return sendSuccess(res, 201, translation);
@@ -498,18 +519,40 @@ router.post(
         const existing = await Translation.findOne({ projectId, key });
 
         if (existing) {
-          const writeSource = resolveWriteSource((existing as any).regulated === true, bulkIsOwner);
-          const oldValue = readValue(existing.translations as any, lang, register) || "";
-          writeValue(existing, "translations", lang, register, value);
-          writeValue(existing, "sources", lang, register, writeSource);
-          existing.updatedAt = new Date();
-          await existing.save();
-          await recordHistory(
-            existing._id, projectId, lang, register, key,
-            oldValue, value, writeSource, req.userId!
-          );
+          const ex = existing;
+          const exRegulated = (ex as any).regulated === true;
+          const writeSource = resolveWriteSource(exRegulated, bulkIsOwner);
+          const oldValue = readValue(ex.translations as any, lang, register) || "";
+          if (exRegulated) {
+            // Regulated cell: the value + its audit row must be ATOMIC. The cell
+            // writes go INSIDE the transaction so a transient retry re-applies
+            // them; a history failure rolls the cell back (no silent regulated
+            // write without an audit trail). A failure here propagates to the
+            // route's 500 — fail loudly rather than import unaudited regulated copy.
+            await withTransactionOrFallback(async (session) => {
+              writeValue(ex, "translations", lang, register, value);
+              writeValue(ex, "sources", lang, register, writeSource);
+              ex.updatedAt = new Date();
+              await ex.save({ session });
+              await recordHistory(
+                ex._id, projectId, lang, register, key,
+                oldValue, value, writeSource, req.userId!, session, true
+              );
+            });
+          } else {
+            writeValue(ex, "translations", lang, register, value);
+            writeValue(ex, "sources", lang, register, writeSource);
+            ex.updatedAt = new Date();
+            await ex.save();
+            await recordHistory(
+              ex._id, projectId, lang, register, key,
+              oldValue, value, writeSource, req.userId!
+            );
+          }
           updated++;
         } else {
+          // New bulk keys are never regulated (bulk doesn't set the lock), so
+          // history stays best-effort here.
           const newT = await Translation.create({
             projectId: new mongoose.Types.ObjectId(projectId as string),
             key,
@@ -923,27 +966,53 @@ router.post(
       }
 
       const translatedKeys: string[] = [];
+      const writeFailedKeys: string[] = [];
 
       for (const t of toTranslate) {
         // Stop persisting if the client disconnected mid-loop — respect the
         // cancel; the finally refunds whatever wasn't written.
         if (aborted) break;
-        if (aiResults[t.key]) {
-          const oldValue = readValue(t.translations as any, targetLang, targetRegister) || "";
-          writeValue(t, "translations", targetLang, targetRegister, aiResults[t.key]);
-          writeValue(t, "sources", targetLang, targetRegister, "ai");
-          t.source = "ai";
-          t.updatedAt = new Date();
-          await t.save();
-          // Count the cell the instant it's durably saved. If the client
-          // disconnects mid-loop, everything written so far stays metered
-          // (the finally only refunds reserved - writtenCount).
+        if (!aiResults[t.key]) continue;
+        const oldValue = readValue(t.translations as any, targetLang, targetRegister) || "";
+        const tRegulated = (t as any).regulated === true;
+        try {
+          if (tRegulated) {
+            // Regulated key: the AI draft cell + its audit row commit ATOMICALLY
+            // (writes INSIDE the txn so a transient retry re-applies them) — a
+            // regulated draft never persists without its audit trail.
+            await withTransactionOrFallback(async (session) => {
+              writeValue(t, "translations", targetLang, targetRegister, aiResults[t.key]);
+              writeValue(t, "sources", targetLang, targetRegister, "ai");
+              t.source = "ai";
+              t.updatedAt = new Date();
+              await t.save({ session });
+              await recordHistory(
+                t._id, projectId, targetLang, targetRegister, t.key,
+                oldValue, aiResults[t.key], "ai", req.userId!, session, true
+              );
+            });
+          } else {
+            writeValue(t, "translations", targetLang, targetRegister, aiResults[t.key]);
+            writeValue(t, "sources", targetLang, targetRegister, "ai");
+            t.source = "ai";
+            t.updatedAt = new Date();
+            await t.save();
+            await recordHistory(
+              t._id, projectId, targetLang, targetRegister, t.key,
+              oldValue, aiResults[t.key], "ai", req.userId!
+            );
+          }
+          // Count the cell the instant it's durably saved (+ audited, if
+          // regulated). A mid-loop disconnect keeps everything written so far
+          // metered (the finally refunds reserved - writtenCount).
           writtenCount++;
-          await recordHistory(
-            t._id, projectId, targetLang, targetRegister, t.key,
-            oldValue, aiResults[t.key], "ai", req.userId!
-          );
           translatedKeys.push(t.key);
+        } catch (keyErr) {
+          // A regulated key whose atomic audit write failed rolled back — DON'T
+          // count it (so the finally refunds it) and report it as failed rather
+          // than leave an unaudited regulated draft.
+          console.error(`[BhashaJS] AI write failed for "${t.key}":`, (keyErr as any)?.message || keyErr);
+          writeFailedKeys.push(t.key);
         }
       }
 
@@ -970,10 +1039,12 @@ router.post(
       }
 
       // Keys the model didn't return (truncation, script-guard drop, batch
-      // error) are reported back instead of being silently lost.
-      const failedKeys = toTranslate
-        .filter((t) => !aiResults[t.key])
-        .map((t) => t.key);
+      // error) PLUS regulated keys whose atomic audit write failed — reported
+      // back instead of being silently lost.
+      const failedKeys = [
+        ...toTranslate.filter((t) => !aiResults[t.key]).map((t) => t.key),
+        ...writeFailedKeys,
+      ];
 
       return sendSuccess(res, 200, {
         message:

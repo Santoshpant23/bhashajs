@@ -331,6 +331,35 @@ async function migrateOwnerMemberships() {
   }
 }
 
+// ─── Migration: Backfill User.projectCount from actual owned projects ──
+// projectCount is the atomic per-user quota counter (see routes/projects.ts).
+// Users created before this field default to 0, so without a backfill the
+// `projectCount < cap` reservation check would let an existing user with N>=cap
+// projects keep creating until the counter caught up. This sets each user's
+// counter to their real Project.countDocuments({ owner }). Idempotent — re-runs
+// converge on the same value, so it's safe even after creates/deletes have
+// already moved the live counter.
+async function migrateProjectCounts() {
+  const Project = (await import("./models/Project")).default;
+  const User = (await import("./models/User")).default;
+
+  const users = await User.find({}, { _id: 1 });
+  let updated = 0;
+
+  for (const u of users) {
+    const actual = await Project.countDocuments({ owner: u._id });
+    const r = await User.updateOne(
+      { _id: u._id },
+      { $set: { projectCount: actual } }
+    );
+    if (r.modifiedCount > 0) updated++;
+  }
+
+  if (updated > 0) {
+    console.log(`[Migration] Backfilled projectCount for ${updated} user(s)`);
+  }
+}
+
 // ─── Start ───────────────────────────────────────────────────
 async function start() {
   try {
@@ -344,15 +373,32 @@ async function start() {
     // {projectId, key} translations. Mongoose builds indexes lazily/async after
     // connect, so without this a burst of first-of-month upserts can race the
     // not-yet-built unique index and create DUPLICATE buckets (getUsage would
-    // then read one and undercount, weakening the cap). syncIndexes() blocks
-    // until they exist.
-    await mongoose.connection.syncIndexes();
-    console.log("Database indexes synchronized");
+    // then read one and undercount, weakening the cap).
+    //
+    // We deliberately do NOT use connection.syncIndexes(): it DROPS any index not
+    // declared in a schema, which could remove an index added out-of-band (Atlas
+    // performance advisor, ops). Instead init() each model — it awaits index
+    // CREATION only (no drops). A build failure (e.g. a pre-existing duplicate
+    // from before a unique index shipped) is logged loudly but does NOT crash
+    // boot; run the one-time dedup and it builds on the next boot.
+    await Promise.all(
+      mongoose.connection.modelNames().map((name) =>
+        mongoose.connection
+          .model(name)
+          .init()
+          .catch((err: any) =>
+            console.error(`[BhashaJS] Index build failed for ${name}:`, err?.message || err)
+          )
+      )
+    );
+    console.log("Database indexes ensured");
 
     // Run one-time migrations, gated by a stored version so the full-collection
     // scans don't run on every restart once they've completed.
     const Meta = (await import("./models/Meta")).default;
-    const MIGRATION_VERSION = 1;
+    // v2 adds migrateProjectCounts() — backfills User.projectCount (the atomic
+    // per-user project-quota counter) for users that predate the field.
+    const MIGRATION_VERSION = 2;
     const metaDoc = await Meta.findOne({ key: "migrationVersion" });
     const ranVersion = typeof metaDoc?.value === "number" ? metaDoc.value : 0;
     if (ranVersion < MIGRATION_VERSION) {
@@ -363,6 +409,7 @@ async function start() {
         console.log(`[Migration] running migrations (have v${ranVersion}, want v${MIGRATION_VERSION})`);
         await migrateOwnerMemberships();
         await migrateRegisters();
+        await migrateProjectCounts();
         await Meta.findOneAndUpdate(
           { key: "migrationVersion" },
           { value: MIGRATION_VERSION, updatedAt: new Date() },

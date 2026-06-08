@@ -95,6 +95,36 @@ const translationSchema = new Schema({
   updatedAt: { type: Date, default: Date.now },
 });
 
+// Per-cell text limits. A "key" is the unit the AI cap meters, so it must be a
+// bounded amount of text or the key-counter stops being a meaningful proxy for
+// token/$ cost (one giant cell could be tens of thousands of tokens). These caps
+// keep a single AI-translatable cell to a sane size; legitimate UI/legal strings
+// are far smaller. Enforced on EVERY save (create, bulk, PUT, AI, pack import) so
+// no path can persist an oversized cell.
+export const MAX_CELL_TEXT_LEN = 10000;
+export const MAX_CONTEXT_LEN = 2000;
+
+translationSchema.pre("save", async function () {
+  const self = this as any;
+  const tr = self.translations;
+  if (tr && typeof tr.forEach === "function") {
+    for (const [lang, inner] of tr as Map<string, Map<string, string>>) {
+      if (inner && typeof (inner as any).forEach === "function") {
+        for (const [reg, val] of inner as Map<string, string>) {
+          if (typeof val === "string" && val.length > MAX_CELL_TEXT_LEN) {
+            throw new Error(
+              `Translation text for ${lang}/${reg} exceeds the ${MAX_CELL_TEXT_LEN}-character limit`
+            );
+          }
+        }
+      }
+    }
+  }
+  if (typeof self.context === "string" && self.context.length > MAX_CONTEXT_LEN) {
+    throw new Error(`Context exceeds the ${MAX_CONTEXT_LEN}-character limit`);
+  }
+});
+
 // Prevent duplicate keys within the same project
 translationSchema.index({ projectId: 1, key: 1 }, { unique: true });
 

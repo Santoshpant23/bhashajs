@@ -212,4 +212,42 @@ describe("audit trail is atomic with the translation write", () => {
       await TranslationHistory.countDocuments({ translationId: regulatedId, lang: "hi" })
     ).toBe(0);
   });
+
+  it("(e) a REGULATED CREATE whose history write fails rolls back — the translation is NOT persisted", async () => {
+    const owner = await registerUser({ email: "owner-e@example.com" });
+    const projRes = await request()
+      .post("/api/projects")
+      .set("Authorization", bearer(owner.token))
+      .send({ name: "RegBank", supportedLanguages: ["en", "hi"] });
+    const projectId = projRes.body.data._id;
+
+    vi.spyOn(TranslationHistory, "create").mockRejectedValue(new Error("forced audit-write failure"));
+
+    const res = await request()
+      .post(`/api/translations/${projectId}`)
+      .set("Authorization", bearer(owner.token))
+      .send({ key: "kyc.new", translations: { en: "KYC notice" }, regulated: true, mandatedBy: "RBI X" });
+
+    // The create + its audit row are atomic, so the whole thing rolls back.
+    expect(res.status).toBe(500);
+    expect(await Translation.countDocuments({ projectId, key: "kyc.new" })).toBe(0);
+    expect(await TranslationHistory.countDocuments({ key: "kyc.new" })).toBe(0);
+  });
+
+  it("(f) a REGULATED BULK update whose history write fails rolls back — the cell is NOT changed", async () => {
+    const { owner, regulatedId, projectId } = await seedRegulated();
+
+    vi.spyOn(TranslationHistory, "create").mockRejectedValue(new Error("forced audit-write failure"));
+
+    const res = await request()
+      .post(`/api/translations/${projectId}/bulk`)
+      .set("Authorization", bearer(owner.token))
+      .send({ lang: "en", translations: { "kyc.disclosure": "TAMPERED" } });
+
+    // The regulated cell's value + audit row are atomic — the failed history
+    // rolls the cell back and the import errors (no silent unaudited write).
+    expect(res.status).toBe(500);
+    const fresh = await Translation.findById(regulatedId).lean();
+    expect((fresh!.translations as any)?.en?.default).not.toBe("TAMPERED");
+  });
 });

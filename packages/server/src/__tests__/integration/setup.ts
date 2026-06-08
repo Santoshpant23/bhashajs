@@ -68,9 +68,12 @@ export function useIntegrationServer() {
     mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
     await mongoose.connect(mongo.getUri());
     // Build all unique indexes before any test runs — mirrors production start()
-    // so the AI-cap dedup ({projectId,period} + {scope,period}) and other unique
-    // indexes are present and the cap tests aren't racing a not-yet-built index.
-    await mongoose.connection.syncIndexes();
+    // (init() = create only, never drops) so the AI-cap dedup ({projectId,period}
+    // + {scope,period}) and other unique indexes are present and the cap tests
+    // aren't racing a not-yet-built index.
+    await Promise.all(
+      mongoose.connection.modelNames().map((name) => mongoose.connection.model(name).init())
+    );
     app = createApp();
   }, 120_000); // memory-server first-run can download/extract the binary — allow plenty of time.
 

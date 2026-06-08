@@ -100,10 +100,22 @@ router.post("/", async (req: AuthRequest, res: Response) => {
 
     // Cap projects per account so one user can't spam thousands of projects
     // (each otherwise carries its own AI allowance). Env-tunable; 0 disables.
+    //
+    // ATOMIC reservation: the old check counted projects then created — a TOCTOU
+    // race where N concurrent requests all read "under cap" and all created,
+    // blowing past the limit. Instead we reserve a slot with a single
+    // conditional increment: bump projectCount ONLY while it's still `< cap`.
+    // Concurrent requests serialize on this one document write, so at most `cap`
+    // of them ever match and increment; the rest get back null → at cap → 403.
     const maxProjects = parseInt(process.env.MAX_PROJECTS_PER_USER || "50", 10);
-    if (Number.isFinite(maxProjects) && maxProjects > 0) {
-      const existing = await Project.countDocuments({ owner: req.userId });
-      if (existing >= maxProjects) {
+    const quotaEnabled = Number.isFinite(maxProjects) && maxProjects > 0;
+    if (quotaEnabled) {
+      const reserved = await User.findOneAndUpdate(
+        { _id: req.userId, projectCount: { $lt: maxProjects } },
+        { $inc: { projectCount: 1 } },
+        { new: true }
+      );
+      if (!reserved) {
         return sendError(
           res,
           403,
@@ -112,22 +124,37 @@ router.post("/", async (req: AuthRequest, res: Response) => {
       }
     }
 
-    const project = await Project.create({
-      name: name.trim(),
-      owner: req.userId,
-      defaultLanguage: defaultLanguage || "en",
-      supportedLanguages: langs,
-    });
+    // From here, a reservation may be held — if anything below throws we MUST
+    // refund it so a failed create doesn't permanently burn a quota slot.
+    let project;
+    try {
+      project = await Project.create({
+        name: name.trim(),
+        owner: req.userId,
+        defaultLanguage: defaultLanguage || "en",
+        supportedLanguages: langs,
+      });
 
-    // Auto-create owner membership
-    const user = await User.findById(req.userId);
-    await ProjectMember.create({
-      projectId: project._id,
-      userId: req.userId,
-      email: user?.email || "",
-      role: "owner",
-      status: "active",
-    });
+      // Auto-create owner membership
+      const user = await User.findById(req.userId);
+      await ProjectMember.create({
+        projectId: project._id,
+        userId: req.userId,
+        email: user?.email || "",
+        role: "owner",
+        status: "active",
+      });
+    } catch (createErr) {
+      if (quotaEnabled) {
+        // Best-effort refund of the reserved slot. Swallow refund errors so the
+        // original failure is what surfaces.
+        await User.updateOne(
+          { _id: req.userId },
+          { $inc: { projectCount: -1 } }
+        ).catch(() => {});
+      }
+      throw createErr;
+    }
 
     return sendSuccess(res, 201, project);
   } catch (e) {
@@ -291,6 +318,11 @@ router.delete(
       const project = await Project.findById(id);
       if (!project) return sendError(res, 404, "Project not found");
 
+      // Capture the owner BEFORE the delete — we need it to release the owner's
+      // atomic project-quota slot once the project is gone. (Sandbox projects
+      // are ownerless; the guarded decrement below simply no-ops for them.)
+      const ownerId = (project as any).owner;
+
       // Cascade-delete ALL related data atomically (or, on a standalone Mongo,
       // dependents-before-parent). The previous version deleted the project
       // FIRST and missed Comment/GlossaryEntry/Notification, orphaning them.
@@ -308,6 +340,17 @@ router.delete(
         await AiUsage.deleteMany({ projectId: id }, { session });
         await Project.deleteOne({ _id: id }, { session });
       });
+
+      // Release the owner's reserved quota slot now that the project is gone.
+      // Guarded against going below 0 (a floored counter is harmless, but this
+      // keeps it tidy if a slot was already reconciled by a backfill). Done
+      // AFTER the cascade succeeds; ownerless sandbox projects skip it.
+      if (ownerId) {
+        await User.updateOne(
+          { _id: ownerId, projectCount: { $gt: 0 } },
+          { $inc: { projectCount: -1 } }
+        );
+      }
 
       return sendSuccess(res, 200, {
         message: "Project and all related data deleted",
