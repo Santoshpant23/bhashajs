@@ -98,6 +98,20 @@ router.post("/", async (req: AuthRequest, res: Response) => {
     // Make sure English is always included
     const langs = Array.from(new Set(["en", ...supportedLanguages]));
 
+    // Cap projects per account so one user can't spam thousands of projects
+    // (each otherwise carries its own AI allowance). Env-tunable; 0 disables.
+    const maxProjects = parseInt(process.env.MAX_PROJECTS_PER_USER || "50", 10);
+    if (Number.isFinite(maxProjects) && maxProjects > 0) {
+      const existing = await Project.countDocuments({ owner: req.userId });
+      if (existing >= maxProjects) {
+        return sendError(
+          res,
+          403,
+          `Project limit reached (${maxProjects} per account). Delete an unused project, or self-host for unlimited.`
+        );
+      }
+    }
+
     const project = await Project.create({
       name: name.trim(),
       owner: req.userId,

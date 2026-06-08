@@ -220,6 +220,19 @@ const sandboxLimiter = rateLimit({
   message: { success: false, message: "Sandbox creation limit reached — please try again later" },
 });
 
+// Public SDK read endpoints (/api/sdk/*, API-key auth) were unlimited — a single
+// key could be scripted into tens of thousands of full-collection reads/min,
+// hammering the shared DB. The SDK caches bundles client-side, so a real app
+// makes only a handful of calls; 120/min/IP is generous for legitimate use and
+// caps the abuse.
+const sdkLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: "Too many requests — please slow down" },
+});
+
 app.use("/api", generalLimiter);
 app.use("/api/auth", authLimiter);
 app.use("/api/translations/:projectId/ai-translate", aiLimiter);
@@ -246,7 +259,7 @@ app.get("/api/health", (req, res) => {
 });
 
 // ─── Public SDK routes (API key auth, no JWT) ───────────────
-app.use("/api/sdk", sdkRoutes);
+app.use("/api/sdk", sdkLimiter, sdkRoutes);
 
 // ─── Public sandbox mint (NO auth) ──────────────────────────
 // Heavily rate-limited (sandboxLimiter, 5/hour/IP) since it creates real DB
@@ -324,6 +337,17 @@ async function start() {
     validateEnv();
     await mongoose.connect(process.env.MONGO_CONNECTION_URL || "");
     console.log("MongoDB connected successfully");
+
+    // Build all schema indexes BEFORE serving traffic. Several correctness
+    // guarantees depend on unique indexes existing — the {projectId, period} and
+    // {scope, period} usage buckets (the AI cap dedup), User.email, ApiKey.key,
+    // {projectId, key} translations. Mongoose builds indexes lazily/async after
+    // connect, so without this a burst of first-of-month upserts can race the
+    // not-yet-built unique index and create DUPLICATE buckets (getUsage would
+    // then read one and undercount, weakening the cap). syncIndexes() blocks
+    // until they exist.
+    await mongoose.connection.syncIndexes();
+    console.log("Database indexes synchronized");
 
     // Run one-time migrations, gated by a stored version so the full-collection
     // scans don't run on every restart once they've completed.

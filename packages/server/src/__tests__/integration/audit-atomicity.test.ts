@@ -29,21 +29,18 @@ import { useIntegrationServer, request, registerUser, bearer } from "./setup";
 /**
  * Force the route's withTransactionOrFallback onto its STANDALONE fallback path
  * (the bug surface on a self-host standalone Mongo) by making the very next
- * session.withTransaction reject with a "transactions not supported" error —
- * exactly the signal the helper sniffs for. The helper then re-runs the work
- * callback with NO session, so recordHistory sees session=undefined and its
- * best-effort-vs-regulated branch is what's under test. Returns a restore fn.
+ * connection.transaction() reject with a "transactions not supported" error —
+ * exactly the signal the helper sniffs for. (The helper uses
+ * mongoose.connection.transaction(), the correct primitive that resets document
+ * state between retries; the fallback catch then re-runs the work callback with
+ * NO session, so recordHistory sees session=undefined and its
+ * best-effort-vs-regulated branch is what's under test.)
  */
 function forceStandaloneFallbackOnce() {
-  const real = mongoose.startSession.bind(mongoose);
-  const spy = vi.spyOn(mongoose, "startSession").mockImplementation(async (...args: any[]) => {
-    const session: any = await (real as any)(...args);
-    session.withTransaction = async () => {
-      throw new Error("Transaction numbers are only allowed on a replica set member or mongos");
-    };
-    // Restore real session behavior for any later transactions in the request.
+  const spy = vi.spyOn(mongoose.connection, "transaction").mockImplementation(async () => {
+    // Restore real transaction behavior for any later transaction in the request.
     spy.mockRestore();
-    return session;
+    throw new Error("Transaction numbers are only allowed on a replica set member or mongos");
   });
 }
 

@@ -28,6 +28,7 @@ import DocLayout from "../../components/DocLayout.astro";
   <ul>
     <li><code>DOMAIN</code> — the domain you'll serve on, e.g. <code>app.example.com</code> (its DNS must point at this server). Caddy provisions HTTPS for it automatically. Leave it unset to serve on <code>localhost</code> for local testing — note that localhost uses Caddy's own self-signed certificate, so your browser shows a one-time security warning (expected; click through, or run <code>caddy trust</code> to install the local CA on the host).</li>
     <li><code>JWT_SECRET</code> — generate with <code>openssl rand -hex 32</code></li>
+    <li><code>APP_URL</code> — the public URL of your dashboard, e.g. <code>https://app.yourdomain.com</code>. Used to build invite-email links. <strong>Required in production</strong> — if left as the <code>example.com</code> placeholder the server refuses to boot.</li>
     <li><code>GEMINI_API_KEY</code> — your Gemini API key</li>
     <li><code>MONGO_ROOT_PASSWORD</code> — strong random password (used by the bundled MongoDB)</li>
     <li><code>CORS_ORIGIN</code> — comma-separated list of frontend origins, e.g. <code>https://bhashajs.com,https://app.bhashajs.com</code></li>

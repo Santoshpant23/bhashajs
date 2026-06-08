@@ -156,8 +156,8 @@ describe("AI translate monthly cap (429, no AI call)", () => {
 
     expect(res.status).toBe(429);
     expect(res.body.success).toBe(false);
-    expect(res.body.message).toMatch(/Monthly AI translation cap reached/i);
-    expect(res.body.message).toContain("/1");
+    expect(res.body.message).toMatch(/cap reached for this project/i);
+    expect(res.body.message).toContain("(1 keys)");
   });
 
   it("returns 429 when the period is already pre-seeded at the cap", async () => {
@@ -171,7 +171,8 @@ describe("AI translate monthly cap (429, no AI call)", () => {
       .send({ targetLang: "hi" });
 
     expect(res.status).toBe(429);
-    expect(res.body.message).toContain("(10/10)");
+    expect(res.body.message).toMatch(/cap reached for this project/i);
+    expect(res.body.message).toContain("(10 keys)");
   });
 
   it("does NOT 429 (and skips AI) when there are no keys to translate", async () => {

@@ -46,7 +46,7 @@ import {
 import { isValidRegister, REGISTERS } from "../models/Translation";
 import { resolveWriteSource } from "../utils/compliance";
 import { withTransactionOrFallback } from "../utils/transaction";
-import { reserveUsage, refundUsage, getUsage, currentPeriod } from "../utils/usage";
+import { reserveAiBudget, refundAiBudget, aiCapMessage, currentPeriod } from "../utils/usage";
 
 // Escape user input destined for a Mongo $regex so it's matched as a literal
 // substring. Without this, a crafted pattern like "(a+)+$" forces catastrophic
@@ -819,13 +819,15 @@ router.post(
       // Capture the period at reserve time so a request that crosses the UTC
       // month boundary refunds the SAME bucket it reserved.
       const meterPeriod = currentPeriod();
-      if (!(await reserveUsage(projectId as string, cap, toTranslate.length, false, meterPeriod))) {
-        const { keysTranslated } = await getUsage(projectId as string);
-        return sendError(
-          res,
-          429,
-          `Monthly AI translation cap reached (${keysTranslated}/${cap}). Resets next month.`
-        );
+      // Reserve against ALL THREE scopes (project → account → global). The
+      // account + global caps are what keep the forever-free service from
+      // bleeding money: one owner can't multiply free AI across many projects,
+      // and the global ceiling bounds the total bill. Keys that fail are refunded.
+      const reservation = await reserveAiBudget(
+        projectId as string, project.owner, cap, toTranslate.length, false, meterPeriod
+      );
+      if (!reservation.ok) {
+        return sendError(res, 429, aiCapMessage(reservation.blockedScope, cap));
       }
 
       // ─── Bulletproof settlement (every exit path: success/abort/exception) ──
@@ -990,7 +992,7 @@ router.post(
         // refund written work, so this can't double-refund.
         res.off("close", onClose);
         const refund = reservedCount - writtenCount;
-        if (refund > 0) await refundUsage(projectId as string, refund, false, meterPeriod);
+        if (refund > 0) await refundAiBudget(projectId as string, project.owner, refund, false, meterPeriod);
       }
     } catch (e: any) {
       console.error("[BhashaJS] AI translation error:", e.message);
@@ -1311,13 +1313,13 @@ router.post(
       // Capture the period at reserve time so a month-boundary-crossing request
       // refunds the SAME bucket it reserved.
       const meterPeriod = currentPeriod();
-      if (!(await reserveUsage(projectId as string, voiceCap, candidates.length, true, meterPeriod))) {
-        const { keysTranslated } = await getUsage(projectId as string);
-        return sendError(
-          res,
-          429,
-          `Monthly AI translation cap reached (${keysTranslated}/${voiceCap}). Resets next month.`
-        );
+      // Voice shares the same model bill, so it reserves against all three
+      // scopes (project → account → global) too.
+      const reservation = await reserveAiBudget(
+        projectId as string, project.owner, voiceCap, candidates.length, true, meterPeriod
+      );
+      if (!reservation.ok) {
+        return sendError(res, 429, aiCapMessage(reservation.blockedScope, voiceCap));
       }
 
       // ─── Bulletproof settlement (every exit path: success/abort/exception) ──
@@ -1404,7 +1406,7 @@ router.post(
         // that weren't persisted; never refund written work (no double-refund).
         res.off("close", onClose);
         const refund = reservedCount - writtenCount;
-        if (refund > 0) await refundUsage(projectId as string, refund, true, meterPeriod);
+        if (refund > 0) await refundAiBudget(projectId as string, project.owner, refund, true, meterPeriod);
       }
     } catch (e: any) {
       console.error("[BhashaJS] Voice generation error:", e?.message);

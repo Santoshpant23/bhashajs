@@ -12,6 +12,7 @@
 
 import mongoose from "mongoose";
 import AiUsage from "../models/AiUsage";
+import UsageCounter from "../models/UsageCounter";
 
 export interface UsageCounts {
   keysTranslated: number;
@@ -152,4 +153,153 @@ export async function refundUsage(
     { projectId, period },
     { $inc: inc, $set: { updatedAt: new Date() } }
   );
+}
+
+// ─── Wider AI-cost guardrails (per-account + global ceiling) ─────────────────
+// The per-project cap above protects against ONE project running up the bill,
+// but a user can spin up many projects (and many users exist), so the hosted
+// "forever free" service needs two more layers, both env-tunable:
+//   - per-ACCOUNT  : AI_ACCOUNT_MONTHLY_CAP — one owner's total across all their
+//                    projects (default 5000). Stops the multi-project multiplier.
+//   - GLOBAL       : AI_GLOBAL_MONTHLY_CAP — instance-wide hard ceiling (default
+//                    100000). The kill-switch that bounds the maintainer's total
+//                    Vertex/Gemini bill no matter what.
+// Set either to 0 to DISABLE it (e.g. self-hosting with your own key = unlimited).
+
+export type BlockedScope = "project" | "account" | "global";
+export interface ReserveResult {
+  ok: boolean;
+  blockedScope: BlockedScope | null;
+}
+
+/** Read an env-configured cap. Unset → fallback (caps ON by default); 0/neg = disabled. */
+function envCap(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) ? n : fallback;
+}
+function accountCap(): number {
+  return envCap("AI_ACCOUNT_MONTHLY_CAP", 5000);
+}
+function globalCap(): number {
+  return envCap("AI_GLOBAL_MONTHLY_CAP", 100000);
+}
+
+/**
+ * Atomically reserve `count` against a UsageCounter scope's cap — same
+ * conditional-$inc-upsert pattern as reserveUsage, but for the wider scopes.
+ * A non-positive cap means "disabled" — always reserves.
+ */
+async function reserveCounter(
+  scope: string,
+  cap: number,
+  count: number,
+  period: string
+): Promise<boolean> {
+  // Ensure the bucket exists so the conditional update can match it.
+  try {
+    await UsageCounter.updateOne(
+      { scope, period },
+      { $setOnInsert: { keysTranslated: 0, updatedAt: new Date() } },
+      { upsert: true }
+    );
+  } catch (e: any) {
+    if (e?.code !== 11000) throw e;
+  }
+  if (!Number.isFinite(cap) || cap <= 0) {
+    await UsageCounter.updateOne(
+      { scope, period },
+      { $inc: { keysTranslated: count }, $set: { updatedAt: new Date() } }
+    );
+    return true;
+  }
+  const updated = await UsageCounter.findOneAndUpdate(
+    { scope, period, keysTranslated: { $lte: cap - count } },
+    { $inc: { keysTranslated: count }, $set: { updatedAt: new Date() } },
+    { new: true }
+  );
+  return updated != null;
+}
+
+/** Undo a UsageCounter reservation (failed/aborted AI work). */
+async function refundCounter(scope: string, count: number, period: string): Promise<void> {
+  if (count <= 0) return;
+  await UsageCounter.updateOne(
+    { scope, period },
+    { $inc: { keysTranslated: -count }, $set: { updatedAt: new Date() } }
+  );
+}
+
+/**
+ * Reserve `count` AI keys against ALL THREE scopes (project → account → global)
+ * for one request. If a later scope is over its cap, the earlier reservations
+ * are refunded and `blockedScope` says which limit was hit, so the route can
+ * send a precise 429. The per-scope $lte checks guarantee no scope is exceeded;
+ * a partial-failure refund keeps the buckets consistent. Voice and translate
+ * share the budget (both bill the model). `ownerId` may be undefined for
+ * ownerless projects (which can't reach AI anyway) — the account scope is then
+ * skipped.
+ */
+export async function reserveAiBudget(
+  projectId: string | mongoose.Types.ObjectId,
+  ownerId: string | mongoose.Types.ObjectId | null | undefined,
+  projectCap: number,
+  count: number,
+  voice = false,
+  period: string = currentPeriod()
+): Promise<ReserveResult> {
+  // 1. Per-project (existing AiUsage meter — also bumps aiCalls/voiceCalls).
+  if (!(await reserveUsage(projectId, projectCap, count, voice, period))) {
+    return { ok: false, blockedScope: "project" };
+  }
+
+  // 2. Per-account.
+  const acctCap = accountCap();
+  const acctScope = ownerId ? `acct:${ownerId}` : null;
+  if (acctScope && acctCap > 0) {
+    if (!(await reserveCounter(acctScope, acctCap, count, period))) {
+      await refundUsage(projectId, count, voice, period);
+      return { ok: false, blockedScope: "account" };
+    }
+  }
+
+  // 3. Global ceiling (the kill-switch).
+  const gCap = globalCap();
+  if (gCap > 0) {
+    if (!(await reserveCounter("global", gCap, count, period))) {
+      if (acctScope && acctCap > 0) await refundCounter(acctScope, count, period);
+      await refundUsage(projectId, count, voice, period);
+      return { ok: false, blockedScope: "global" };
+    }
+  }
+
+  return { ok: true, blockedScope: null };
+}
+
+/** Refund an AI reservation across all three scopes (unused/aborted/failed keys). */
+export async function refundAiBudget(
+  projectId: string | mongoose.Types.ObjectId,
+  ownerId: string | mongoose.Types.ObjectId | null | undefined,
+  count: number,
+  voice = false,
+  period: string = currentPeriod()
+): Promise<void> {
+  if (count <= 0) return;
+  await refundUsage(projectId, count, voice, period);
+  if (ownerId && accountCap() > 0) await refundCounter(`acct:${ownerId}`, count, period);
+  if (globalCap() > 0) await refundCounter("global", count, period);
+}
+
+/** Human-facing 429 message for the scope that blocked an AI reservation. */
+export function aiCapMessage(scope: BlockedScope | null, projectCap: number): string {
+  switch (scope) {
+    case "account":
+      return "You've reached your monthly free AI translation limit. It resets next month — or self-host for unlimited AI on your own key.";
+    case "global":
+      return "AI translation is temporarily paused — the service-wide monthly limit was reached. It resets next month; your existing translations keep serving.";
+    case "project":
+    default:
+      return `Monthly AI translation cap reached for this project (${projectCap} keys). Resets next month.`;
+  }
 }

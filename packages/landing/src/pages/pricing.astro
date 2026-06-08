@@ -5,7 +5,7 @@ import Footer from "../components/Footer.astro";
 
 const title = "Pricing — bhasha-js";
 const description =
-  "bhasha-js is open source and free to self-host. The hosted dashboard has a generous free tier; AI translation usage is fair-use capped because every AI call has real Vertex AI cost.";
+  "bhasha-js is forever free. Open source and free to self-host; the hosted dashboard and AI are free too, with a fair-use cap of 5,000 AI-translated keys per account per month.";
 
 const tiers = [
   {
@@ -38,13 +38,13 @@ const tiers = [
   },
   {
     name: "Hosted",
-    tagline: "We run it. You ship.",
+    tagline: "Free — fair use.",
     blurb:
-      "The managed dashboard at app.bhashajs.com — sign up and get an API key in minutes. A generous free tier covers real projects; hosted AI translation is subject to a fair-use monthly cap because each AI call has a real Vertex AI cost.",
+      "The managed dashboard and AI at app.bhashajs.com are free — sign up and get an API key in minutes. Hosted AI translation has a fair-use cap of 5,000 AI-translated keys per account each month (resets monthly). Hit the cap and your existing translations keep serving — only new AI generations pause until the next cycle.",
     points: [
-      "Managed API + dashboard, nothing to deploy",
-      "Generous free tier for keys, languages, and members",
-      "AI translation included under a fair-use monthly cap",
+      "Managed API + dashboard, nothing to deploy — free",
+      "5,000 AI-translated keys per account / month, resets monthly",
+      "Existing translations keep serving even after the cap",
       "Translation Memory and exports (CSV / Android / iOS)",
     ],
     cta: { label: "Create a project", href: "https://app.bhashajs.com/register" },
@@ -60,11 +60,11 @@ const tiers = [
   <section style="padding-top: 5rem; padding-bottom: 1.5rem;">
     <div class="container" style="text-align: center;">
       <div style="display: inline-block; padding: 0.4rem 0.9rem; border-radius: 999px; background: rgba(255, 107, 44, 0.12); color: var(--brand-light); font-size: 0.85rem; font-weight: 600; margin-bottom: 1.5rem;">
-        Open source · Fair-use hosted AI
+        Forever free · Fair-use hosted AI
       </div>
-      <h1 style="margin-bottom: 1.5rem;">Honest pricing</h1>
+      <h1 style="margin-bottom: 1.5rem;">Forever free</h1>
       <p style="font-size: 1.2rem; max-width: 660px; margin: 0 auto; color: var(--text-dim);">
-        bhasha-js is open source and free to self-host. The hosted service has a generous free tier — but AI translation runs on Vertex AI, which costs real money per call, so hosted AI usage is capped under fair use. We'd rather be upfront about that than surprise you with a bill.
+        bhasha-js is free — no paid plans, no credit card. The SDK is open source, self-hosting is unlimited on your own key, and the hosted dashboard and AI are free too. The only limit is a fair-use cap on hosted AI translation, so a few heavy users can't exhaust the shared budget. We'd rather be upfront about that than surprise you with a bill.
       </p>
     </div>
   </section>
@@ -105,14 +105,14 @@ const tiers = [
     <div class="container" style="max-width: 760px;">
       <h2 style="margin-bottom: 1.5rem;">The honest fine print</h2>
 
-      <h3 style="margin-bottom: 0.5rem;">Why isn't there a price list yet?</h3>
+      <h3 style="margin-bottom: 0.5rem;">Is there a price list?</h3>
       <p style="margin-bottom: 1.5rem;">
-        bhasha-js is early and the exact numbers are still being worked out. Rather than invent prices we'd have to change, the rule today is simple: <strong>self-hosting is free forever</strong>, and the <strong>hosted free tier is generous</strong>. Paid hosted plans will arrive once the limits are dialed in — existing free projects won't be rug-pulled.
+        No — bhasha-js is <strong>free</strong>. Hosted AI has a fair-use monthly limit per account so a few heavy users can't exhaust the shared budget; if you need more, self-host (unlimited on your own key) or bundle your own translations. No credit card, no paid tiers.
       </p>
 
       <h3 style="margin-bottom: 0.5rem;">What does "fair-use AI cap" actually mean?</h3>
       <p style="margin-bottom: 1.5rem;">
-        AI translations are generated with Google's Vertex AI, and each call costs us money. So hosted AI translation has a monthly request cap on the free tier. Hit the cap and your <em>existing</em> translations keep serving instantly — only new AI generations pause until the next cycle (or you self-host with your own key, where the only limit is your own cloud bill).
+        AI translations are generated with Google's Vertex AI, and each call costs us money. So hosted AI translation is capped at <strong>5,000 AI-translated keys per account each month</strong>, resetting monthly. Hit the cap and your <em>existing</em> translations keep serving instantly — only new AI generations pause until the next cycle (or you self-host with your own key, where the only limit is your own cloud bill).
       </p>
 
       <h3 style="margin-bottom: 0.5rem;">Is anything actually free?</h3>
