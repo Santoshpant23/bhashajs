@@ -668,6 +668,10 @@ router.put("/:id", async (req: AuthRequest, res: Response) => {
         const fresh = await Translation.findById(id).session(session ?? null);
         if (!fresh) throw new Error("Translation vanished mid-edit");
         const wasRegulated = (fresh as any).regulated === true;
+        // A LEGACY regulated row (created before the everRegulated marker shipped)
+        // may lack the flag — set it whenever the row IS currently regulated, so
+        // unlocking it (regulated → false) can't drop it from the compliance audit.
+        if (wasRegulated) (fresh as any).everRegulated = true;
 
         // Scalar field changes.
         if (contextIntent !== undefined) fresh.context = contextIntent;

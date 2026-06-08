@@ -316,6 +316,9 @@ router.delete(
       // Cascade-delete ALL related data atomically (or, on a standalone Mongo,
       // dependents-before-parent). The previous version deleted the project
       // FIRST and missed Comment/GlossaryEntry/Notification, orphaning them.
+      // The owner's quota-slot release happens in the SAME transaction so a
+      // decrement failure can't leave the project gone with the counter stuck
+      // high (round-11 audit: decrement was AFTER the txn → desync on failure).
       await withTransactionOrFallback(async (session) => {
         await Translation.deleteMany({ projectId: id }, { session });
         await TranslationMemory.deleteMany({ projectId: id }, { session });
@@ -329,18 +332,16 @@ router.delete(
         await ApiKey.deleteMany({ projectId: id }, { session });
         await AiUsage.deleteMany({ projectId: id }, { session });
         await Project.deleteOne({ _id: id }, { session });
+        // Release the owner's reserved quota slot in the SAME transaction.
+        // Guarded against going below 0; ownerless sandbox projects skip it.
+        if (ownerId) {
+          await User.updateOne(
+            { _id: ownerId, projectCount: { $gt: 0 } },
+            { $inc: { projectCount: -1 } },
+            { session }
+          );
+        }
       });
-
-      // Release the owner's reserved quota slot now that the project is gone.
-      // Guarded against going below 0 (a floored counter is harmless, but this
-      // keeps it tidy if a slot was already reconciled by a backfill). Done
-      // AFTER the cascade succeeds; ownerless sandbox projects skip it.
-      if (ownerId) {
-        await User.updateOne(
-          { _id: ownerId, projectCount: { $gt: 0 } },
-          { $inc: { projectCount: -1 } }
-        );
-      }
 
       return sendSuccess(res, 200, {
         message: "Project and all related data deleted",

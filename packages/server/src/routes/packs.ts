@@ -157,6 +157,12 @@ router.post(
         let existing = await Translation.findOne({ projectId: projectObjectId, key: item.key });
         const isNew = !existing;
         const itemMandate = typeof item.mandatedBy === "string" ? item.mandatedBy.trim() : "";
+        // Scalar-field INTENTS from the pack, re-applied to the freshly re-fetched
+        // doc INSIDE the transaction (the in-memory mutation here is for the
+        // overwrite/skip + cellSource decisions only; the txn re-fetch is what
+        // actually persists). `promoteRegulated` is append-only — never demotes.
+        const promoteRegulated = !!itemMandate;
+        const contextIntent = item.context ? String(item.context) : "";
         if (!existing) {
           existing = await Translation.create({
             projectId: projectObjectId,
@@ -187,8 +193,13 @@ router.post(
         // re-persists them: connection.transaction() RESETS the document's
         // modified state between retries, so a write applied before the callback
         // would be lost on the second attempt (and recordHistory would still log
-        // it → a phantom audit row). Capturing old→new here also lets each
-        // history event mirror the actual change.
+        // it → a phantom audit row).
+        //
+        // The `oldValue` captured HERE is provisional — used only for the
+        // overwrite/skip decision below. The AUTHORITATIVE oldValue is re-read
+        // from the freshly-fetched doc INSIDE the transaction (see B2 below), so a
+        // concurrent regulated overwrite chains off the truly-committed predecessor
+        // rather than this pre-transaction snapshot.
         const cellWrites: {
           lang: string;
           register: Register;
@@ -234,40 +245,72 @@ router.post(
         if (cellWrites.length === 0) continue;
 
         const isRegulated = existing.regulated === true;
-        const target = existing; // non-null inside the closure
+        const targetId = existing._id; // re-fetched fresh inside the txn below
         // The save and EVERY history row for this item commit (or roll back)
         // together. For a regulated item, a history failure either rolls back the
         // transaction (replica set) or — on a standalone self-host with no
         // transaction — propagates out of recordHistory (isRegulated=true), so we
-        // never end up with a live regulated cell that has no audit trail. The
-        // cell writes live INSIDE the callback so a transaction retry re-applies
-        // them after connection.transaction() resets the doc.
+        // never end up with a live regulated cell that has no audit trail.
+        //
+        // (B2) STALE-CHAIN FIX: we RE-FETCH the translation WITH the session
+        // inside the callback and read each cell's oldValue from that FRESH doc —
+        // never from the copy read before the transaction. connection.transaction()
+        // retries the callback on a WriteConflict, and each retry re-reads the
+        // actually-committed state, so two concurrent regulated overwrites form a
+        // real chain (v0→A then A→B) instead of both chaining off the same stale v0.
+        // Mirrors the re-fetch-inside-txn pattern in routes/translations.ts
+        // (PUT/bulk/ai-translate/review). The cell writes live INSIDE the callback
+        // so a retry re-applies them after connection.transaction() resets the doc.
+        //
+        // (B3) STANDALONE SAFETY: regulated items pass { requireTransaction: true }
+        // so on a true standalone Mongo (no transactions) the write FAILS rather
+        // than falling back and persisting a regulated pack cell with NO history.
         try {
-          await withTransactionOrFallback(async (session) => {
-            for (const w of cellWrites) {
-              writeValue(target, "translations", w.lang, w.register, w.newValue);
-              writeValue(target, "sources", w.lang, w.register, w.cellSource);
-            }
-            target.updatedAt = new Date();
-            await target.save({ session });
-            // children-before-parent ordering is moot here (save then history),
-            // but the session couples them — both land or neither does.
-            for (const w of cellWrites) {
-              await recordHistory(
-                target._id,
-                target.projectId,
-                w.lang,
-                w.register,
-                target.key,
-                w.oldValue,
-                w.newValue,
-                "human",
-                req.userId!,
-                session,
-                isRegulated
-              );
-            }
-          });
+          await withTransactionOrFallback(
+            async (session) => {
+              const fresh = await Translation.findById(targetId).session(session ?? null);
+              if (!fresh) throw new Error("translation vanished mid-pack-import");
+              // Re-apply the pack's scalar-field intents to the FRESH doc (the
+              // pre-txn copy's in-memory mutations don't survive the re-fetch).
+              // Append-only: promote to regulated, fill context/mandatedBy only if
+              // empty — never demote or overwrite an owner's existing value.
+              if (contextIntent && !fresh.context) fresh.context = contextIntent;
+              if (promoteRegulated) {
+                (fresh as any).regulated = true;
+                if (!(fresh as any).mandatedBy) (fresh as any).mandatedBy = itemMandate;
+              }
+              for (const w of cellWrites) {
+                // oldValue from the FRESH (committed) doc — the real predecessor,
+                // so a concurrent overwrite chains off the right value.
+                const freshOld = (readValue(fresh.translations as any, w.lang, w.register) as string) || "";
+                writeValue(fresh, "translations", w.lang, w.register, w.newValue);
+                writeValue(fresh, "sources", w.lang, w.register, w.cellSource);
+                w.oldValue = freshOld;
+              }
+              fresh.updatedAt = new Date();
+              await fresh.save({ session });
+              // children-before-parent ordering is moot here (save then history),
+              // but the session couples them — both land or neither does.
+              for (const w of cellWrites) {
+                await recordHistory(
+                  fresh._id,
+                  fresh.projectId,
+                  w.lang,
+                  w.register,
+                  fresh.key,
+                  w.oldValue,
+                  w.newValue,
+                  "human",
+                  req.userId!,
+                  session,
+                  isRegulated
+                );
+              }
+            },
+            // Regulated items must never fall back to a session-less write that
+            // could persist the cell without its atomic audit row.
+            isRegulated ? { requireTransaction: true } : {}
+          );
           if (isNew) created++; else updated++;
         } catch (itemErr: any) {
           // One item's atomic failure (a regulated item whose audit write could

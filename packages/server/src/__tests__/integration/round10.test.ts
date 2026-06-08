@@ -6,6 +6,7 @@
  */
 
 import { describe, it, expect, vi, afterEach } from "vitest";
+import mongoose from "mongoose";
 import { useIntegrationServer, request, registerUser, bearer } from "./setup";
 import Translation from "../../models/Translation";
 import TranslationHistory from "../../models/TranslationHistory";
@@ -131,5 +132,52 @@ describe("round-10 audit regressions", () => {
     expect(await Project.countDocuments({ owner: owner.userId })).toBe(0);
     const u = await User.findById(owner.userId).lean();
     expect((u as any)?.projectCount || 0).toBe(0);
+  });
+
+  it("B1-legacy: a pre-upgrade regulated row missing everRegulated survives unlock in the audit", async () => {
+    const owner = await registerUser();
+    const projectId = await project(owner);
+    const auth = bearer(owner.token);
+
+    // Raw insert of a regulated doc WITHOUT the everRegulated field (bypasses the
+    // model pre-save hook) — simulates a row created before the marker shipped.
+    const raw = await Translation.collection.insertOne({
+      projectId: new mongoose.Types.ObjectId(projectId),
+      key: "legacy.kyc",
+      translations: { hi: { default: "v" } },
+      sources: { hi: { default: "human" } },
+      source: "human",
+      regulated: true,
+      mandatedBy: "RBI legacy",
+      updatedAt: new Date(),
+    });
+    const id = raw.insertedId.toString();
+
+    // Unlock it (regulated → false).
+    const unlock = await request().put(`/api/translations/${id}`).set("Authorization", auth)
+      .send({ regulated: false });
+    expect(unlock.status).toBe(200);
+
+    // everRegulated was set on unlock (wasRegulated), so it stays in the audit.
+    const fresh = await Translation.findById(id).lean();
+    expect((fresh as any).everRegulated).toBe(true);
+    const audit = await request().get(`/api/projects/${projectId}/compliance/audit`).set("Authorization", auth);
+    expect(audit.body.data.keys.some((k: any) => k.key === "legacy.kyc")).toBe(true);
+  });
+
+  it("H1: a failed quota decrement during project delete rolls back the whole delete (no desync)", async () => {
+    const owner = await registerUser();
+    const projectId = await project(owner); // projectCount = 1
+
+    // Force the in-transaction decrement (User.updateOne) to fail.
+    vi.spyOn(User, "updateOne").mockRejectedValueOnce(new Error("forced decrement failure"));
+
+    const del = await request().delete(`/api/projects/${projectId}`).set("Authorization", bearer(owner.token));
+    expect(del.status).toBe(500);
+
+    // Atomic: the project is NOT gone and the counter is NOT desynced.
+    expect(await Project.countDocuments({ _id: projectId })).toBe(1);
+    const u = await User.findById(owner.userId).lean();
+    expect((u as any).projectCount).toBe(1);
   });
 });

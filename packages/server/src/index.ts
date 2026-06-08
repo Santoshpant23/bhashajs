@@ -366,12 +366,51 @@ async function migrateProjectCounts() {
   }
 }
 
+// v4: backfill the append-only everRegulated marker for LEGACY regulated rows
+// created before the field existed. Without this, unlocking or deleting such a
+// row drops it from the compliance audit (which queries regulated OR
+// everRegulated). Idempotent.
+async function migrateEverRegulated() {
+  const Translation = (await import("./models/Translation")).default;
+  const r = await Translation.updateMany(
+    { regulated: true, everRegulated: { $ne: true } },
+    { $set: { everRegulated: true } }
+  );
+  if (r.modifiedCount > 0) {
+    console.log(`[Migration] Backfilled everRegulated for ${r.modifiedCount} regulated key(s)`);
+  }
+}
+
 // ─── Start ───────────────────────────────────────────────────
 async function start() {
   try {
     validateEnv();
     await mongoose.connect(process.env.MONGO_CONNECTION_URL || "");
     console.log("MongoDB connected successfully");
+
+    // Compliance + the atomic guarantees (audit-trail transactions, quota
+    // reservations, the dedup migration) REQUIRE multi-document transactions,
+    // which only run on a REPLICA SET (or mongos). The bundled docker-compose
+    // ships a single-node RS and Atlas is always a RS. A standalone mongod would
+    // silently fall back to non-transactional writes (a regulated write could
+    // persist without its audit row), so REFUSE to start in production on one;
+    // warn elsewhere so local quick-tests still run.
+    try {
+      const hello = await mongoose.connection.db?.admin().command({ hello: 1 });
+      const supportsTransactions = !!hello?.setName || hello?.msg === "isdbgrid";
+      if (!supportsTransactions) {
+        const msg =
+          "MongoDB is a STANDALONE deployment — BhashaJS needs a replica set for transactional " +
+          "audit-trail + quota integrity. Use the bundled docker-compose (single-node RS) or Atlas.";
+        if (process.env.NODE_ENV === "production") {
+          console.error("FATAL: " + msg);
+          process.exit(1);
+        }
+        console.warn("[BhashaJS] " + msg);
+      }
+    } catch (e: any) {
+      console.warn("[BhashaJS] Could not verify Mongo replica-set topology:", e?.message || e);
+    }
 
     // ─── 1. One-time migrations (gated) ───────────────────────────
     // Run BEFORE the index build below. This ORDER matters: a deploy with
@@ -385,7 +424,7 @@ async function start() {
     // buckets (which would undercount usage and weaken the AI cap) before the
     // unique index is enforced. v2 added migrateProjectCounts() — backfills
     // User.projectCount (the atomic per-user project-quota counter).
-    const MIGRATION_VERSION = 3;
+    const MIGRATION_VERSION = 4;
     const metaDoc = await Meta.findOne({ key: "migrationVersion" });
     const ranVersion = typeof metaDoc?.value === "number" ? metaDoc.value : 0;
     if (ranVersion < MIGRATION_VERSION) {
@@ -397,6 +436,8 @@ async function start() {
         await migrateOwnerMemberships();
         await migrateRegisters();
         await migrateProjectCounts();
+        // v4: backfill everRegulated for legacy regulated rows.
+        await migrateEverRegulated();
         // Must run before the critical unique-index build below.
         await migrateDedupUsageBuckets();
         await Meta.findOneAndUpdate(
