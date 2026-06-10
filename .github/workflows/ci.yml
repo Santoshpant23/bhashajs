@@ -36,7 +36,7 @@ jobs:
       # Cache the mongod binary that mongodb-memory-server downloads for the
       # integration tests, so CI doesn't re-fetch ~600MB every run.
       - name: Cache mongodb-memory-server binary
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/mongodb-binaries
           key: mongodb-binaries-${{ runner.os }}
