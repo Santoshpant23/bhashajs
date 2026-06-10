@@ -51,9 +51,6 @@ cd bhashajs
 
 # 2. Install dependencies
 npm install
-cd packages/server && npm install && cd ../..
-cd packages/dashboard && npm install && cd ../..
-cd packages/sdk && npm install && cd ../..
 
 # 3. Configure
 cp .env.example .env
@@ -115,6 +112,23 @@ function Content() {
 }
 ```
 
+### Next.js / SSR
+
+Use `bhasha-js/server` for React Server Component-safe formatters and language utilities. For zero-flash SSR, pass `preloadedTranslations` to `<I18nProvider>` with the bundles you rendered on the server. Fetched text bundles also persist to `localStorage` by default (`persistCache={false}` disables it), so returning visitors get an immediate stale-while-revalidate first paint.
+
+### React Native
+
+The SDK works out of the box in React Native. DOM/font calls are no-ops when `document` is unavailable, and the bundle cache uses `localStorage` only when the runtime provides it.
+
+### CLI
+
+| Command | Purpose |
+|---------|---------|
+| `npx bhasha init` | Scaffold `bhasha.config.json` and `locales/`. |
+| `npx bhasha pull` | Generate type-safe translation keys from local JSON or the hosted API. |
+| `npx bhasha push --lang hi --register formal` | Push nested or flat locale JSON to the dashboard with a write-capable scoped API key. |
+| `npx bhasha scan --strict` | Report missing/unused keys in source. |
+
 ## Supported Languages
 
 | Code | Language | Script | Direction |
@@ -146,7 +160,7 @@ See the deployment steps in the repo. You need:
 git clone <repo> bhashajs && cd bhashajs
 cp .env.example .env && nano .env
 chmod +x deploy.sh
-./deploy.sh your-email@example.com
+./deploy.sh
 ```
 
 ## Environment Variables
@@ -163,6 +177,7 @@ chmod +x deploy.sh
 | `GEMINI_MODEL` | No | `gemini-2.5-flash` | Model id used for AI translations / voice |
 | `JWT_EXPIRY` | No | `7d` | JWT token expiry duration |
 | `CORS_ORIGIN` | No | `*` | Allowed CORS origins |
+| `MAX_KEYS_PER_PROJECT` | No | `20000` | Max translation keys per project (create / bulk import / SDK push). `0` disables the cap |
 | `MONGO_ROOT_PASSWORD` | No | `changeme` | MongoDB root password (Docker only) |
 | `AI_PROVIDER` | No | `gemini` | AI translation provider |
 
