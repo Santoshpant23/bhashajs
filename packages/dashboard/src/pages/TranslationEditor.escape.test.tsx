@@ -48,6 +48,10 @@ vi.mock("../context/NotificationContext", () => ({
   }),
 }));
 
+vi.mock("../context/AuthContext", () => ({
+  useAuth: () => ({ userId: "u1" }),
+}));
+
 // Router hooks the editor reads on mount.
 vi.mock("react-router-dom", () => ({
   useParams: () => ({ projectId: "p1" }),

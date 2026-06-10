@@ -59,4 +59,35 @@ describe("invite expiry", () => {
     expect(acceptRes.status).toBe(410);
     expect(acceptRes.body.success).toBe(false);
   });
+
+  it("registration does not auto-claim an expired pending invite", async () => {
+    const owner = await registerUser({ email: "owner-auto@example.com" });
+    const inviteEmail = "lateinvitee@example.com";
+
+    const projRes = await request()
+      .post("/api/projects")
+      .set("Authorization", bearer(owner.token))
+      .send({ name: "Expired Auto Claim", supportedLanguages: ["en", "hi"] });
+    expect(projRes.status).toBe(201);
+    const projectId = projRes.body.data._id;
+
+    const inviteRes = await request()
+      .post(`/api/projects/${projectId}/team/invite`)
+      .set("Authorization", bearer(owner.token))
+      .send({ email: inviteEmail, role: "translator", assignedLanguages: ["hi"] });
+    expect(inviteRes.status).toBe(201);
+    const inviteToken = inviteRes.body.data.inviteToken;
+
+    await ProjectMember.updateOne(
+      { inviteToken },
+      { $set: { inviteExpiresAt: new Date(Date.now() - 60 * 60 * 1000) } }
+    );
+
+    const registered = await registerUser({ email: inviteEmail });
+    expect(registered.email).toBe(inviteEmail);
+
+    const member = await ProjectMember.findOne({ inviteToken });
+    expect(member?.status).toBe("pending");
+    expect(member?.userId).toBeNull();
+  });
 });

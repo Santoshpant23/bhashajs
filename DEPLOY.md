@@ -41,7 +41,7 @@ Add these records:
 | CNAME | `@` | `cname.vercel-dns.com` | Automatic |
 | CNAME | `www` | `cname.vercel-dns.com` | Automatic |
 | CNAME | `app` | `cname.vercel-dns.com` | Automatic |
-| CNAME | `api` | (Railway will give you this) | Automatic |
+| A | `api` | (your GCP VM's public IP — see step 2) | Automatic |
 
 > Note: Namecheap can have trouble with `CNAME @` — if it complains, use Vercel's IP address `76.76.21.21` as an `A` record for `@` and `www` instead.
 

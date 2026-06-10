@@ -10,10 +10,12 @@
 import { Router, Request, Response } from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import crypto from "crypto";
 import User from "../models/User";
 import ProjectMember from "../models/ProjectMember";
 import { authMiddleware, AuthRequest } from "../middleware/auth";
 import { sendSuccess, sendError } from "../utils/response";
+import { sendPasswordResetEmail } from "../services/email";
 import {
   validateAll,
   validateRequired,
@@ -22,6 +24,23 @@ import {
 } from "../utils/validate";
 
 const router = Router();
+const RESET_SUCCESS_MESSAGE = "If that account exists, a reset link has been sent.";
+
+function sha256(input: string): string {
+  return crypto.createHash("sha256").update(input).digest("hex");
+}
+
+function validatePasswordForAuth(password: unknown): string | null {
+  if (typeof password !== "string") {
+    return "Password must be a string";
+  }
+  const passwordError = validatePassword(password);
+  if (passwordError) return passwordError;
+  if (Buffer.byteLength(password, "utf8") > 72) {
+    return "Password must be 72 bytes or fewer";
+  }
+  return null;
+}
 
 // ─── REGISTER ────────────────────────────────────────────────
 router.post("/register", async (req: Request, res: Response) => {
@@ -36,6 +55,15 @@ router.post("/register", async (req: Request, res: Response) => {
       () => validatePassword(password),
     );
     if (error) return sendError(res, 400, error);
+    if (typeof email !== "string" || email.trim().length > 254) {
+      return sendError(res, 400, "Email must be 254 characters or fewer");
+    }
+    if (typeof password !== "string") {
+      return sendError(res, 400, "Password must be a string");
+    }
+    if (Buffer.byteLength(password, "utf8") > 72) {
+      return sendError(res, 400, "Password must be 72 bytes or fewer");
+    }
 
     // Check if email is already taken
     const existingUser = await User.findOne({ email: email.toLowerCase().trim() });
@@ -66,11 +94,13 @@ router.post("/register", async (req: Request, res: Response) => {
       // user clicks the email link AFTER signup auto-claimed the membership.
       // Clearing it used to leave the route with no way to look up the
       // membership and forced a dangerous "any active membership" fallback.
+      const now = new Date();
       await ProjectMember.updateMany(
         {
           email: user.email,
           status: "pending",
           userId: null,
+          $or: [{ inviteExpiresAt: null }, { inviteExpiresAt: { $gte: now } }],
         },
         {
           $set: { userId: user._id, status: "active" },
@@ -92,7 +122,10 @@ router.post("/register", async (req: Request, res: Response) => {
       userId: user._id,
       name: user.name,
     });
-  } catch (e) {
+  } catch (e: any) {
+    if (e?.code === 11000) {
+      return sendError(res, 400, "Email already registered");
+    }
     return sendError(res, 500, "Something went wrong during registration");
   }
 });
@@ -140,8 +173,64 @@ router.post("/login", async (req: Request, res: Response) => {
 });
 
 // ─── LOGOUT (revoke all sessions) ────────────────────────────
-// Bumps the user's tokenVersion so EVERY JWT issued before now (this device and
-// any others) stops verifying. The client should also drop its stored token.
+// FORGOT PASSWORD
+router.post("/forgot-password", async (req: Request, res: Response) => {
+  try {
+    const { email } = req.body;
+    const normalized = typeof email === "string" ? email.toLowerCase().trim() : "";
+    if (normalized) {
+      const user = await User.findOne({ email: normalized });
+      if (user) {
+        const token = crypto.randomBytes(32).toString("hex");
+        (user as any).resetTokenHash = sha256(token);
+        (user as any).resetTokenExpiresAt = new Date(Date.now() + 60 * 60 * 1000);
+        await user.save();
+
+        const appUrl = process.env.APP_URL || "https://app.bhashajs.com";
+        const resetLink = `${appUrl}/reset-password?token=${token}`;
+        sendPasswordResetEmail({ to: user.email, resetLink }).catch((e) => {
+          console.error("[email] Failed to queue password reset:", e);
+        });
+      }
+    }
+
+    return sendSuccess(res, 200, { message: RESET_SUCCESS_MESSAGE });
+  } catch (e) {
+    return sendError(res, 500, "Something went wrong during password reset");
+  }
+});
+
+// RESET PASSWORD
+router.post("/reset-password", async (req: Request, res: Response) => {
+  try {
+    const { token, password } = req.body;
+    if (typeof token !== "string" || !token.trim()) {
+      return sendError(res, 400, "Invalid or expired reset link");
+    }
+
+    const passwordError = validatePasswordForAuth(password);
+    if (passwordError) return sendError(res, 400, passwordError);
+
+    const user = await User.findOne({
+      resetTokenHash: sha256(token),
+      resetTokenExpiresAt: { $gte: new Date() },
+    });
+    if (!user) {
+      return sendError(res, 400, "Invalid or expired reset link");
+    }
+
+    user.password = await bcrypt.hash(password, 10);
+    (user as any).resetTokenHash = null;
+    (user as any).resetTokenExpiresAt = null;
+    (user as any).tokenVersion = ((user as any).tokenVersion ?? 0) + 1;
+    await user.save();
+
+    return sendSuccess(res, 200, { message: "Password has been reset." });
+  } catch (e) {
+    return sendError(res, 500, "Something went wrong during password reset");
+  }
+});
+
 router.post("/logout", authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
     await User.updateOne({ _id: req.userId }, { $inc: { tokenVersion: 1 } });

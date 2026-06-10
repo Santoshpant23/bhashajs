@@ -41,6 +41,8 @@ describe("isNonLatinScript (Latin-locale script guard)", () => {
     expect(isNonLatinScript("வணக்கம்")).toBe(true);    // Tamil
     expect(isNonLatinScript("ಸ್ವಾಗತ")).toBe(true);     // Kannada
     expect(isNonLatinScript("خوش آمدید")).toBe(true);  // Arabic/Urdu
+    expect(isNonLatinScript("\uFB8E")).toBe(true);     // Arabic Presentation Forms-A
+    expect(isNonLatinScript("\uFE8D")).toBe(true);     // Arabic Presentation Forms-B
   });
   it("passes pure Latin / Hinglish / Roman Nepali", () => {
     expect(isNonLatinScript("Swagat hai")).toBe(false);

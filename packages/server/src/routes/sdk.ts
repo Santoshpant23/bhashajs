@@ -10,14 +10,26 @@
  */
 
 import { Router, Request, Response } from "express";
+import mongoose from "mongoose";
 import Project from "../models/Project";
 import ApiKey from "../models/ApiKey";
 import Translation from "../models/Translation";
+import TranslationHistory from "../models/TranslationHistory";
 import { sendSuccess, sendError } from "../utils/response";
-import { coerceRegister, readValue, DEFAULT_REGISTER } from "../utils/registers";
+import { coerceRegister, readValue, writeValue, deleteVoiceCell, DEFAULT_REGISTER, Register } from "../utils/registers";
 import { canServe } from "../utils/compliance";
+import { flattenTranslations } from "../utils/flatten";
+import { withTransactionOrFallback } from "../utils/transaction";
+import { maxKeysPerProject, keyCapMessage } from "../utils/limits";
 
 const router = Router();
+const KEY_REGEX = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const RESERVED_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const RESERVED_KEY_MESSAGE = "Key cannot be __proto__, constructor, or prototype";
+
+function isReservedKey(key: string): boolean {
+  return RESERVED_KEYS.has(key);
+}
 
 /**
  * Derive the request's origin hostname for the allowlist check. Browsers send
@@ -81,6 +93,7 @@ async function authenticateApiKey(req: Request, res: Response, next: Function) {
       ApiKey.updateOne({ _id: scoped._id }, { lastUsedAt: new Date() }).catch(() => {});
 
       (req as any).project = project;
+      (req as any).apiKeyDoc = scoped;
       return next();
     }
 
@@ -100,6 +113,189 @@ async function authenticateApiKey(req: Request, res: Response, next: Function) {
 
 // All SDK routes require a valid API key
 router.use(authenticateApiKey);
+
+async function recordPushHistory(
+  translationId: any,
+  projectId: any,
+  lang: string,
+  register: Register,
+  key: string,
+  oldValue: string,
+  newValue: string,
+  changedBy: any,
+  session?: any
+) {
+  if (oldValue === newValue) return;
+  try {
+    await TranslationHistory.create(
+      [{
+        translationId,
+        projectId,
+        lang,
+        register,
+        key,
+        oldValue: oldValue || "",
+        newValue,
+        source: "human",
+        changedBy,
+      }],
+      { session }
+    );
+  } catch (e) {
+    if (session) throw e;
+  }
+}
+
+// PUSH TRANSLATIONS (WRITE-CAPABLE SDK KEY)
+router.post("/push", async (req: Request, res: Response) => {
+  try {
+    const project = (req as any).project;
+    const apiKeyDoc = (req as any).apiKeyDoc;
+
+    if (!apiKeyDoc || apiKeyDoc.readOnly !== false) {
+      return sendError(res, 403, "This key cannot write. Create a scoped API key with read-only OFF.");
+    }
+    if (!project.owner) {
+      return sendError(res, 403, "Sandbox projects cannot accept SDK pushes");
+    }
+
+    const { lang, translations } = req.body;
+    if (!lang || typeof lang !== "string") {
+      return sendError(res, 400, "Language code is required");
+    }
+    if (!project.supportedLanguages.includes(lang)) {
+      return sendError(res, 400, `"${lang}" is not a supported language for this project`);
+    }
+    if (!translations || typeof translations !== "object" || Array.isArray(translations)) {
+      return sendError(res, 400, "Translations must be an object of key-value pairs");
+    }
+
+    const register = coerceRegister(req.body.register);
+    let flatResult: { flat: Record<string, string>; skipped: string[] };
+    try {
+      flatResult = flattenTranslations(translations);
+    } catch (e: any) {
+      if (e?.message === "Too many keys in one import") {
+        return sendError(res, 400, "Too many keys in one import");
+      }
+      throw e;
+    }
+
+    for (const rawKey of Object.keys(flatResult.flat)) {
+      const key = rawKey.trim();
+      if (isReservedKey(key)) {
+        return sendError(res, 400, RESERVED_KEY_MESSAGE);
+      }
+    }
+
+    let created = 0;
+    let updated = 0;
+    let skipped = 0;
+    const skippedKeys: string[] = [];
+    const skippedRegulated = new Set<string>();
+    const addSkippedKey = (key: string) => {
+      skipped++;
+      if (skippedKeys.length < 100) skippedKeys.push(key);
+    };
+    const addSkippedRegulated = (key: string) => {
+      if (skippedRegulated.has(key)) return;
+      skippedRegulated.add(key);
+      addSkippedKey(key);
+    };
+
+    for (const key of flatResult.skipped) addSkippedKey(key);
+
+    // Per-project key ceiling (abuse hardening). SOFT cap: a single push may
+    // overshoot by its own batch size; growth stays bounded.
+    const keyCap = maxKeysPerProject();
+    if (keyCap > 0) {
+      const totalKeys = await Translation.countDocuments({ projectId: project._id });
+      if (totalKeys >= keyCap) return sendError(res, 400, keyCapMessage(keyCap));
+    }
+
+    for (const [rawKey, value] of Object.entries(flatResult.flat)) {
+      const key = rawKey.trim();
+      if (!key || !KEY_REGEX.test(key)) {
+        addSkippedKey(rawKey);
+        continue;
+      }
+
+      let existing = await Translation.findOne({ projectId: project._id, key });
+      if (!existing) {
+        // A concurrent push/import racing this create loses to the unique
+        // {projectId, key} index — fall through to the update path with the
+        // winner's doc instead of 500ing the whole push.
+        try {
+          const newT = await Translation.create({
+            projectId: new mongoose.Types.ObjectId(String(project._id)),
+            key,
+            translations: { [lang]: { [register]: value } },
+            source: "human",
+            sources: { [lang]: { [register]: "human" } },
+          });
+          await recordPushHistory(
+            newT._id,
+            newT.projectId,
+            lang,
+            register,
+            key,
+            "",
+            value,
+            project.owner
+          );
+          created++;
+          continue;
+        } catch (e: any) {
+          if (e?.code !== 11000) throw e;
+          existing = await Translation.findOne({ projectId: project._id, key });
+          if (!existing) throw e;
+        }
+      }
+
+      {
+        let didUpdate = false;
+        await withTransactionOrFallback(async (session) => {
+          const fresh = await Translation.findById(existing._id).session(session ?? null);
+          if (!fresh) return;
+          if ((fresh as any).regulated === true || (fresh as any).everRegulated === true) {
+            addSkippedRegulated(key);
+            return;
+          }
+          const oldValue = readValue(fresh.translations as any, lang, register) || "";
+          if (oldValue !== value) deleteVoiceCell(fresh, lang, register);
+          writeValue(fresh, "translations", lang, register, value);
+          writeValue(fresh, "sources", lang, register, "human");
+          fresh.updatedAt = new Date();
+          await fresh.save({ session });
+          await recordPushHistory(
+            fresh._id,
+            fresh.projectId,
+            lang,
+            register,
+            key,
+            oldValue,
+            value,
+            project.owner,
+            session
+          );
+          didUpdate = true;
+        });
+        if (didUpdate) updated++;
+      }
+    }
+
+    return sendSuccess(res, 200, {
+      message: `Push complete: ${created} created, ${updated} updated${skipped ? `, ${skipped} skipped` : ""}`,
+      created,
+      updated,
+      skipped,
+      skippedKeys,
+      skippedRegulated: Array.from(skippedRegulated),
+    });
+  } catch (e) {
+    return sendError(res, 500, "Failed to push translations");
+  }
+});
 
 // ─── GET PROJECT INFO ─────────────────────────────────────────
 router.get("/project", (req: Request, res: Response) => {
@@ -144,7 +340,7 @@ router.get("/translations", async (req: Request, res: Response) => {
       { projectId: project._id },
       "key translations sources regulated"
     ).lean();
-    const flat: Record<string, string> = {};
+    const flat: Record<string, string> = Object.create(null);
 
     for (const t of translations) {
       // Try the requested register, fall back to "default" so a partially
@@ -209,7 +405,7 @@ router.get("/voice", async (req: Request, res: Response) => {
       { projectId: project._id },
       "key sources regulated voice"
     ).lean();
-    const flat: Record<string, { ipa: string; ssml: string }> = {};
+    const flat: Record<string, { ipa: string; ssml: string }> = Object.create(null);
 
     for (const t of translations) {
       let cell = pickSafeVoice(t, lang, reg);

@@ -108,6 +108,8 @@ import DocLayout from "../../components/DocLayout.astro";
 &lt;/<span class="tok-key">I18nProvider</span>&gt;</code></pre>
 
   <p>The SDK fetches translations from <code>https://api.bhashajs.com/api</code> using the <code>x-api-key</code> header. Cached in memory after first load — language switching is instant.</p>
+  <p>To migrate existing locale JSON, mint a scoped API key with read-only off, then push flat or nested files:</p>
+  <pre><code><span class="tok-fn">npx bhasha push</span> --lang hi --register formal</code></pre>
 
   <h3>Mode 3 · Self-hosted</h3>
   <p>See <a href="/docs/self-hosting/">Self-hosting guide</a>.</p>

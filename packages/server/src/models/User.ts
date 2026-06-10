@@ -22,6 +22,8 @@ const userSchema = new Schema({
   // was TOCTOU-racey). Decremented on project delete (and refunded if the
   // create fails). Backfilled for pre-existing users by migrateProjectCounts().
   projectCount: { type: Number, default: 0 },
+  resetTokenHash: { type: String, default: null },
+  resetTokenExpiresAt: { type: Date, default: null },
   createdAt: { type: Date, default: Date.now },
 });
 

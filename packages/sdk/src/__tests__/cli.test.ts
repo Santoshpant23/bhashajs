@@ -4,11 +4,39 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { flattenBundle, keysFromBundle } from "../cli";
 
 // Behavioral tests for the built CLI (dist/cli.js). Requires `npm run build`
 // first (CI builds the SDK before testing); skipped if the artifact is absent.
 const CLI = fileURLToPath(new URL("../../dist/cli.js", import.meta.url));
 const built = existsSync(CLI);
+
+describe("CLI locale flattening", () => {
+  it("extracts keys from nested locale JSON", () => {
+    expect(keysFromBundle({
+      checkout: { title: "Checkout", summary: { total: "Total" } },
+      "nav.home": "Home",
+    }).sort()).toEqual(["checkout.summary.total", "checkout.title", "nav.home"]);
+  });
+
+  it("keeps the bare register-map guard", () => {
+    expect(keysFromBundle({
+      default: { "hero.title": "Welcome" },
+      casual: { "hero.title": "Hi" },
+    })).toEqual([]);
+  });
+
+  it("skips non-string and too-deep leaves while flattening", () => {
+    const { flat, skipped } = flattenBundle({
+      ok: { title: "OK" },
+      count: 1,
+      a: { b: { c: { d: { e: { f: { g: { h: { i: "deep" } } } } } } } },
+    });
+
+    expect(flat["ok.title"]).toBe("OK");
+    expect(skipped).toEqual(["count", "a.b.c.d.e.f.g.h.i"]);
+  });
+});
 
 function run(cwd: string, args: string[]) {
   return execFileSync(process.execPath, [CLI, ...args], { cwd, encoding: "utf8" });

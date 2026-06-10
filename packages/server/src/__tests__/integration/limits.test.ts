@@ -18,9 +18,12 @@ describe("cost-control limits", () => {
   useIntegrationServer();
 
   const ORIG_CAP = process.env.AI_MONTHLY_CAP_DEFAULT;
+  const ORIG_KEY_CAP = process.env.MAX_KEYS_PER_PROJECT;
   afterEach(() => {
     if (ORIG_CAP === undefined) delete process.env.AI_MONTHLY_CAP_DEFAULT;
     else process.env.AI_MONTHLY_CAP_DEFAULT = ORIG_CAP;
+    if (ORIG_KEY_CAP === undefined) delete process.env.MAX_KEYS_PER_PROJECT;
+    else process.env.MAX_KEYS_PER_PROJECT = ORIG_KEY_CAP;
   });
 
   async function project(owner: { token: string }) {
@@ -71,5 +74,50 @@ describe("cost-control limits", () => {
     const owner = await registerUser();
     const proj = await project(owner);
     expect(proj.aiMonthlyCap).toBe(5000);
+  });
+
+  it("MAX_KEYS_PER_PROJECT caps key creation on create and bulk import", async () => {
+    process.env.MAX_KEYS_PER_PROJECT = "2";
+    const owner = await registerUser();
+    const proj = await project(owner);
+    const auth = bearer(owner.token);
+
+    for (const key of ["k.one", "k.two"]) {
+      const r = await request()
+        .post(`/api/translations/${proj._id}`)
+        .set("Authorization", auth)
+        .send({ key, translations: { en: "x" } });
+      expect(r.status).toBe(201);
+    }
+
+    // Third single create is rejected at the cap.
+    const third = await request()
+      .post(`/api/translations/${proj._id}`)
+      .set("Authorization", auth)
+      .send({ key: "k.three", translations: { en: "x" } });
+    expect(third.status).toBe(400);
+    expect(third.body.message).toMatch(/key limit/i);
+
+    // Bulk import is rejected at the cap too.
+    const bulk = await request()
+      .post(`/api/translations/${proj._id}/bulk`)
+      .set("Authorization", auth)
+      .send({ lang: "en", translations: { "k.four": "x" } });
+    expect(bulk.status).toBe(400);
+    expect(bulk.body.message).toMatch(/key limit/i);
+
+    expect(await Translation.countDocuments({ projectId: proj._id })).toBe(2);
+  });
+
+  it("MAX_KEYS_PER_PROJECT=0 disables the key cap", async () => {
+    process.env.MAX_KEYS_PER_PROJECT = "0";
+    const owner = await registerUser();
+    const proj = await project(owner);
+
+    const r = await request()
+      .post(`/api/translations/${proj._id}`)
+      .set("Authorization", bearer(owner.token))
+      .send({ key: "k.any", translations: { en: "x" } });
+    expect(r.status).toBe(201);
   });
 });

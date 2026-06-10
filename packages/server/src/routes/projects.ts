@@ -116,7 +116,7 @@ router.post("/", async (req: AuthRequest, res: Response) => {
           const reserved = await User.findOneAndUpdate(
             { _id: req.userId, projectCount: { $lt: maxProjects } },
             { $inc: { projectCount: 1 } },
-            { new: true, session }
+            { returnDocument: "after", session }
           );
           if (!reserved) {
             const e: any = new Error("PROJECT_LIMIT");
@@ -255,7 +255,7 @@ router.put(
       }
 
       const project = await Project.findByIdAndUpdate(id, updateFields, {
-        new: true,
+        returnDocument: "after",
       });
 
       if (!project) return sendError(res, 404, "Project not found");
@@ -282,7 +282,7 @@ router.post(
       const project = await Project.findByIdAndUpdate(
         id,
         { apiKey: newKey },
-        { new: true }
+        { returnDocument: "after" }
       );
 
       if (!project) return sendError(res, 404, "Project not found");
@@ -304,6 +304,7 @@ router.delete(
 
       const idError = validateObjectId(id as string, "Project ID");
       if (idError) return sendError(res, 400, idError);
+      const projectId = id as string;
 
       const project = await Project.findById(id);
       if (!project) return sendError(res, 404, "Project not found");
@@ -320,9 +321,40 @@ router.delete(
       // decrement failure can't leave the project gone with the counter stuck
       // high (round-11 audit: decrement was AFTER the txn → desync on failure).
       await withTransactionOrFallback(async (session) => {
+        const regulatedKeys = await Translation.find({
+          projectId,
+          $or: [{ regulated: true }, { everRegulated: true }],
+        })
+          .select("_id key")
+          .session(session ?? null)
+          .lean();
+
+        if (regulatedKeys.length > 0) {
+          for (const t of regulatedKeys as any[]) {
+            await TranslationHistory.create(
+              [{
+                translationId: t._id,
+                projectId,
+                lang: "*",
+                register: "default",
+                key: t.key,
+                oldValue: "",
+                newValue: "deleted",
+                source: "deleted",
+                changedBy: req.userId!,
+              }],
+              { session }
+            );
+          }
+          await TranslationHistory.deleteMany(
+            { projectId, translationId: { $nin: regulatedKeys.map((t: any) => t._id) } },
+            { session }
+          );
+        } else {
+          await TranslationHistory.deleteMany({ projectId }, { session });
+        }
         await Translation.deleteMany({ projectId: id }, { session });
         await TranslationMemory.deleteMany({ projectId: id }, { session });
-        await TranslationHistory.deleteMany({ projectId: id }, { session });
         await Comment.deleteMany({ projectId: id }, { session });
         await GlossaryEntry.deleteMany({ projectId: id }, { session });
         await Notification.deleteMany({ projectId: id }, { session });

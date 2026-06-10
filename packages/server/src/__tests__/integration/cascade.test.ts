@@ -13,6 +13,7 @@
 
 import { describe, it, expect } from "vitest";
 import Translation from "../../models/Translation";
+import TranslationHistory from "../../models/TranslationHistory";
 import Comment from "../../models/Comment";
 import GlossaryEntry from "../../models/GlossaryEntry";
 import Notification from "../../models/Notification";
@@ -93,6 +94,39 @@ describe("cascade delete", () => {
     expect(await Notification.countDocuments({ projectId })).toBe(0);
     expect(await ApiKey.countDocuments({ projectId })).toBe(0);
     expect(await ProjectMember.countDocuments({ projectId })).toBe(0);
+  });
+
+  it("deleting a project retains ever-regulated history with delete tombstones", async () => {
+    const owner = await registerUser({ email: "owner-reg-cascade@example.com" });
+
+    const projRes = await request()
+      .post("/api/projects")
+      .set("Authorization", bearer(owner.token))
+      .send({ name: "Regulated Delete", supportedLanguages: ["en", "hi"] });
+    expect(projRes.status).toBe(201);
+    const projectId = projRes.body.data._id;
+
+    const trRes = await request()
+      .post(`/api/translations/${projectId}`)
+      .set("Authorization", bearer(owner.token))
+      .send({
+        key: "kyc.notice",
+        translations: { en: "KYC notice" },
+        regulated: true,
+        mandatedBy: "RBI X",
+      });
+    expect(trRes.status).toBe(201);
+    const translationId = trRes.body.data._id;
+
+    const delRes = await request()
+      .delete(`/api/projects/${projectId}`)
+      .set("Authorization", bearer(owner.token));
+    expect(delRes.status).toBe(200);
+
+    expect(await Translation.countDocuments({ projectId })).toBe(0);
+    const history = await TranslationHistory.find({ projectId, translationId }).sort({ createdAt: 1 });
+    expect(history.length).toBeGreaterThan(0);
+    expect(history.some((h) => h.source === "deleted" && h.lang === "*")).toBe(true);
   });
 
   it("deleting a translation removes its comments", async () => {

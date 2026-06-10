@@ -19,7 +19,7 @@ import {
   readdirSync,
   statSync,
 } from "node:fs";
-import { join, extname } from "node:path";
+import { join, extname, basename } from "node:path";
 
 const CONFIG_FILE = "bhasha.config.json";
 const DEFAULTS = {
@@ -32,6 +32,10 @@ const DEFAULTS = {
 };
 
 type Config = typeof DEFAULTS;
+type FlatBundle = {
+  flat: Record<string, string>;
+  skipped: string[];
+};
 
 // ─── tiny output helpers (no color deps) ───────────────────────────
 const log = (m: string) => process.stdout.write(m + "\n");
@@ -85,13 +89,48 @@ function loadConfig(flags: Record<string, string | boolean>): Config {
 
 // ─── key extraction from JSON bundles ──────────────────────────────
 const REGISTER_NAMES = new Set(["default", "formal", "casual"]);
+const MAX_FLATTEN_DEPTH = 8;
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+export function flattenBundle(obj: unknown): FlatBundle {
+  const flat: Record<string, string> = Object.create(null);
+  const skipped: string[] = [];
+
+  function walk(value: unknown, path: string[]) {
+    if (!isPlainObject(value)) {
+      if (path.length > 0) skipped.push(path.join("."));
+      return;
+    }
+    for (const [segment, child] of Object.entries(value)) {
+      const nextPath = [...path, segment];
+      const dotted = nextPath.join(".");
+      if (nextPath.length > MAX_FLATTEN_DEPTH) {
+        skipped.push(dotted);
+      } else if (typeof child === "string") {
+        flat[dotted] = child;
+      } else if (isPlainObject(child)) {
+        walk(child, nextPath);
+      } else {
+        skipped.push(dotted);
+      }
+    }
+  }
+
+  walk(obj, []);
+  return { flat, skipped };
+}
 
 // A locale file is either flat ({ "hero.title": "..." }) or register-nested
 // ({ "hero.title": { "default": "..." } }). In both, the translation KEY is
 // the top-level property, so Object.keys is what we want — UNLESS the bundle is
 // itself a bare register map ({ "default": {...}, "casual": {...} }), which
 // would yield bogus keys like ["default","casual"]. Guard against that shape.
-function keysFromBundle(obj: unknown): string[] {
+export function keysFromBundle(obj: unknown): string[] {
   if (!obj || typeof obj !== "object" || Array.isArray(obj)) return [];
   const names = Object.keys(obj as Record<string, unknown>);
   if (names.length > 0 && names.every((k) => REGISTER_NAMES.has(k))) {
@@ -101,7 +140,7 @@ function keysFromBundle(obj: unknown): string[] {
     );
     return [];
   }
-  return names;
+  return Object.keys(flattenBundle(obj).flat);
 }
 
 function collectLocalKeys(cfg: Config): string[] {
@@ -276,6 +315,101 @@ async function cmdPull(cfg: Config, flags: Record<string, string | boolean>) {
   wireTsconfig(cfg.out);
 }
 
+function localeFilesForPush(cfg: Config, flags: Record<string, string | boolean>): string[] {
+  if (!existsSync(cfg.localesDir)) {
+    die(`No locales directory "${cfg.localesDir}". Run \`bhasha init\` first.`);
+  }
+  const lang = flags["lang"];
+  if (typeof lang === "string") {
+    const file = join(cfg.localesDir, `${lang}.json`);
+    if (!existsSync(file)) die(`Missing locale file: ${file}`);
+    return [file];
+  }
+  const files = readdirSync(cfg.localesDir)
+    .filter((f) => f.endsWith(".json"))
+    .map((f) => join(cfg.localesDir, f));
+  if (files.length === 0) die(`No .json locale files in "${cfg.localesDir}".`);
+  return files;
+}
+
+function readFlatLocale(file: string): FlatBundle {
+  try {
+    return flattenBundle(JSON.parse(readFileSync(file, "utf8")));
+  } catch {
+    die(`${file} is not valid JSON.`);
+  }
+}
+
+async function cmdPush(cfg: Config, flags: Record<string, string | boolean>) {
+  if (typeof fetch === "undefined") {
+    die("Push needs Node 18+ (global fetch is missing).");
+  }
+  if (!cfg.projectKey) {
+    die("Push needs a projectKey. Set it in bhasha.config.json or pass --project-key.");
+  }
+
+  const register = typeof flags["register"] === "string" ? flags["register"] : "default";
+  const dryRun = flags["dry-run"] === true;
+  const files = localeFilesForPush(cfg, flags);
+
+  for (const file of files) {
+    const lang = basename(file, ".json");
+    const { flat, skipped } = readFlatLocale(file);
+    const keys = Object.keys(flat);
+
+    if (dryRun) {
+      log(`${lang}: would push ${keys.length} key(s) to register "${register}"${skipped.length ? `, ${skipped.length} skipped locally` : ""}`);
+      if (skipped.length) log(`  skipped locally: ${skipped.slice(0, 10).join(", ")}`);
+      continue;
+    }
+
+    const url = `${cfg.apiUrl}/sdk/push`;
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": cfg.projectKey,
+        },
+        body: JSON.stringify({ lang, register, translations: flat }),
+      });
+    } catch (e: any) {
+      return die(`Could not reach ${cfg.apiUrl}: ${e?.message || e}`);
+    }
+
+    const bodyText = await res.text();
+    let json: any = null;
+    try {
+      json = bodyText ? JSON.parse(bodyText) : null;
+    } catch {
+      // Keep bodyText for the generic error below.
+    }
+
+    if (res.status === 403) {
+      die(
+        "Push was rejected. Create a scoped API key with read-only OFF and no origin allowlist in Project Settings -> API Key."
+      );
+    }
+    if (!res.ok) {
+      die(`API returned HTTP ${res.status}${bodyText ? ": " + bodyText : ""}`);
+    }
+
+    const data = json?.data ?? json ?? {};
+    const totalSkipped = Number(data.skipped || 0) + skipped.length;
+    log(`${lang}: ${data.created || 0} created, ${data.updated || 0} updated, ${totalSkipped} skipped`);
+    if (Array.isArray(data.skippedRegulated) && data.skippedRegulated.length > 0) {
+      log(
+        `  regulated keys skipped: ${data.skippedRegulated.join(", ")} ` +
+          "(regulated keys can only be edited by a human in the dashboard)"
+      );
+    }
+    if (skipped.length) {
+      log(`  skipped locally: ${skipped.slice(0, 10).join(", ")}`);
+    }
+  }
+}
+
 /**
  * Make sure the generated .d.ts is picked up by TypeScript. If tsconfig.json is
  * strict JSON with an `include` array that doesn't list the file, add it; if
@@ -351,16 +485,19 @@ Usage:
   bhasha init                     scaffold bhasha.config.json + locales/
   bhasha pull [--remote|--local]  generate type-safe keys from the API or local locales
                                   (defaults to the hosted API when a projectKey is set)
+  bhasha push [--lang <code>]     push local locale JSON to BhashaJS
   bhasha scan [--strict]          find t()/<Trans> keys; report missing/unused
 
 Flags (override bhasha.config.json):
   --project-key <key>   --api-url <url>     --source-lang <code>
   --locales-dir <dir>   --out <file>        --src <dir>
+  --register <reg>      --dry-run
 
 Examples:
   npx bhasha init
   npx bhasha pull                 # from ./locales/*.json
   npx bhasha pull --remote --project-key bjs_xxx
+  npx bhasha push --lang hi --register formal
   npx bhasha scan --strict`);
 }
 
@@ -376,6 +513,9 @@ async function main() {
       break;
     case "pull":
       await cmdPull(cfg, flags);
+      break;
+    case "push":
+      await cmdPush(cfg, flags);
       break;
     case "scan":
       cmdScan(cfg, flags);
@@ -398,4 +538,6 @@ async function main() {
   }
 }
 
-main().catch((e) => die(e?.message || String(e)));
+if (typeof require !== "undefined" && typeof module !== "undefined" && require.main === module) {
+  main().catch((e) => die(e?.message || String(e)));
+}

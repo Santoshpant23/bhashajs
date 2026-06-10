@@ -39,6 +39,7 @@ import {
   readValue,
   writeValue,
   writeVoiceCell,
+  deleteVoiceCell,
   iterateCells,
   DEFAULT_REGISTER,
   Register,
@@ -47,12 +48,39 @@ import { isValidRegister, REGISTERS } from "../models/Translation";
 import { resolveWriteSource } from "../utils/compliance";
 import { withTransactionOrFallback } from "../utils/transaction";
 import { reserveAiBudget, refundAiBudget, aiCapMessage, currentPeriod } from "../utils/usage";
+import { maxKeysPerProject, keyCapMessage } from "../utils/limits";
+import { flattenTranslations } from "../utils/flatten";
 
 // Escape user input destined for a Mongo $regex so it's matched as a literal
 // substring. Without this, a crafted pattern like "(a+)+$" forces catastrophic
 // backtracking (ReDoS) over the whole collection.
 function escapeRegex(input: string): string {
   return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const KEY_REGEX = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const RESERVED_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const RESERVED_KEY_MESSAGE = "Key cannot be __proto__, constructor, or prototype";
+
+function isReservedKey(key: string): boolean {
+  return RESERVED_KEYS.has(key);
+}
+
+function ownString(obj: Record<string, unknown>, key: string): string | undefined {
+  if (!obj || !Object.prototype.hasOwnProperty.call(obj, key)) return undefined;
+  const value = obj[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function ownVoice(
+  obj: Record<string, unknown>,
+  key: string
+): { ipa: string; ssml: string } | undefined {
+  if (!obj || !Object.prototype.hasOwnProperty.call(obj, key)) return undefined;
+  const value = obj[key] as any;
+  if (!value || typeof value !== "object") return undefined;
+  if (typeof value.ipa !== "string" || typeof value.ssml !== "string") return undefined;
+  return { ipa: value.ipa, ssml: value.ssml };
 }
 
 const router = Router();
@@ -160,7 +188,7 @@ router.get(
       if (lang && typeof lang === "string") {
         const reg = coerceRegister(req.query.register);
         const translations = await Translation.find({ projectId });
-        const flat: Record<string, string> = {};
+        const flat: Record<string, string> = Object.create(null);
         for (const t of translations) {
           let value = readValue(t.translations as any, lang, reg);
           if (!value && reg !== DEFAULT_REGISTER) {
@@ -188,10 +216,18 @@ router.get(
       const pageLimit = Math.min(200, Math.max(1, isNaN(rawLimit) ? 50 : rawLimit));
       const skip = (pageNum - 1) * pageLimit;
 
-      const [translations, total] = await Promise.all([
+      const [translations, total, commentCountRows] = await Promise.all([
         Translation.find(query).sort({ key: 1 }).skip(skip).limit(pageLimit),
         Translation.countDocuments(query),
+        Comment.aggregate([
+          { $match: { projectId: new mongoose.Types.ObjectId(projectId as string) } },
+          { $group: { _id: "$translationId", n: { $sum: 1 } } },
+        ]),
       ]);
+      const commentCounts: Record<string, number> = {};
+      for (const row of commentCountRows) {
+        if (row?._id) commentCounts[String(row._id)] = row.n || 0;
+      }
 
       return sendSuccess(res, 200, {
         data: translations,
@@ -201,6 +237,7 @@ router.get(
           total,
           totalPages: Math.ceil(total / pageLimit),
         },
+        commentCounts,
       });
     } catch (e) {
       return sendError(res, 500, "Failed to fetch translations");
@@ -368,12 +405,24 @@ router.post(
       const keyError = validateRequired(key, "Translation key");
       if (keyError) return sendError(res, 400, keyError);
 
-      const keyRegex = /^[a-z0-9._]+$/;
-      if (!keyRegex.test(key.trim())) {
+      const trimmedKey = key.trim();
+      if (isReservedKey(trimmedKey)) {
+        return sendError(res, 400, RESERVED_KEY_MESSAGE);
+      }
+
+      // Per-project key ceiling (abuse hardening). SOFT cap: checked once per
+      // request, so a concurrent burst can overshoot slightly — the point is
+      // bounding unbounded growth, not exact accounting.
+      const keyCap = maxKeysPerProject();
+      if (keyCap > 0) {
+        const totalKeys = await Translation.countDocuments({ projectId });
+        if (totalKeys >= keyCap) return sendError(res, 400, keyCapMessage(keyCap));
+      }
+      if (!KEY_REGEX.test(trimmedKey)) {
         return sendError(
           res,
           400,
-          "Key must only contain lowercase letters, numbers, dots, and underscores (e.g. hero.title, nav_home)"
+          "Key must use letters, numbers, dots, underscores, and hyphens, and start with a letter or number"
         );
       }
 
@@ -416,7 +465,7 @@ router.post(
 
       const docFields = {
         projectId: new mongoose.Types.ObjectId(projectId as string),
-        key: key.trim(),
+        key: trimmedKey,
         translations: normalized,
         context: context?.trim() || undefined,
         source: "human",
@@ -431,7 +480,7 @@ router.post(
           for (const [reg, value] of Object.entries(langMap)) {
             if (value.trim()) {
               await recordHistory(
-                docId, projectId, lang, reg as Register, key.trim(),
+                docId, projectId, lang, reg as Register, trimmedKey,
                 "", value, "human", req.userId!, session, incomingRegulated
               );
             }
@@ -483,14 +532,18 @@ router.post(
       const langError = validateRequired(lang, "Language code");
       if (langError) return sendError(res, 400, langError);
 
+      const project = await Project.findById(projectId).select("defaultLanguage");
+      if (!project) return sendError(res, 404, "Project not found");
+      const sourceLang = project.defaultLanguage || "en";
+
       // Translator language restriction
       if (req.membership?.role === "translator") {
-        if (!req.membership.assignedLanguages.includes(lang)) {
+        if (lang !== sourceLang && !req.membership.assignedLanguages.includes(lang)) {
           return sendError(res, 403, `You are not assigned to translate "${lang}"`);
         }
       }
 
-      if (!translations || typeof translations !== "object") {
+      if (!translations || typeof translations !== "object" || Array.isArray(translations)) {
         return sendError(res, 400, "Translations must be an object of key-value pairs");
       }
 
@@ -501,75 +554,111 @@ router.post(
       let created = 0;
       let updated = 0;
       let skipped = 0;
-      const keyRegex = /^[a-z0-9._]+$/;
+      const skippedKeys: string[] = [];
+      const addSkippedKey = (key: string) => {
+        skipped++;
+        if (skippedKeys.length < 100) skippedKeys.push(key);
+      };
 
       // Compliance lock on write also applies to bulk import: a non-owner may
       // not publish a cell on a regulated key. Their bulk write is held as
       // "pending" until an owner approves it (see PUT /:id and /review).
       const bulkIsOwner = req.membership?.role === "owner";
 
-      for (const [rawKey, value] of Object.entries(translations)) {
-        if (typeof value !== "string") { skipped++; continue; }
+      let flatResult: { flat: Record<string, string>; skipped: string[] };
+      try {
+        flatResult = flattenTranslations(translations);
+      } catch (e: any) {
+        if (e?.message === "Too many keys in one import") {
+          return sendError(res, 400, "Too many keys in one import");
+        }
+        throw e;
+      }
+
+      for (const rawKey of Object.keys(flatResult.flat)) {
+        const key = rawKey.trim();
+        if (isReservedKey(key)) {
+          return sendError(res, 400, RESERVED_KEY_MESSAGE);
+        }
+      }
+      for (const key of flatResult.skipped) addSkippedKey(key);
+
+      // Per-project key ceiling (abuse hardening). SOFT cap: a single request
+      // may overshoot by its own batch size; growth stays bounded.
+      const keyCap = maxKeysPerProject();
+      if (keyCap > 0) {
+        const totalKeys = await Translation.countDocuments({ projectId });
+        if (totalKeys >= keyCap) return sendError(res, 400, keyCapMessage(keyCap));
+      }
+
+      for (const [rawKey, value] of Object.entries(flatResult.flat)) {
         const key = rawKey.trim();
         // Same key shape rule as single create — silently skip malformed keys
         // rather than aborting the whole import (typical CSV/JSON dumps will
         // have a few stray entries that shouldn't kill a 5,000-row import).
-        if (!key || !keyRegex.test(key)) { skipped++; continue; }
+        if (!key || !KEY_REGEX.test(key)) { addSkippedKey(rawKey); continue; }
+        if (isReservedKey(key)) {
+          return sendError(res, 400, RESERVED_KEY_MESSAGE);
+        }
 
-        const existing = await Translation.findOne({ projectId, key });
+        let existing = await Translation.findOne({ projectId, key });
 
-        if (existing) {
-          const ex = existing;
-          const exRegulated = (ex as any).regulated === true;
-          const writeSource = resolveWriteSource(exRegulated, bulkIsOwner);
-          const oldValue = readValue(ex.translations as any, lang, register) || "";
-          if (exRegulated) {
-            // Regulated cell: value + audit row ATOMIC, and audit-critical so it
-            // never falls back to a non-transactional path. Re-fetch INSIDE the
-            // transaction so oldValue is the real committed predecessor (correct
-            // chain under concurrency); a history failure rolls the cell back.
-            await withTransactionOrFallback(
-              async (session) => {
-                const fresh = await Translation.findById(ex._id).session(session ?? null);
-                if (!fresh) return;
-                const freshOld = readValue(fresh.translations as any, lang, register) || "";
-                writeValue(fresh, "translations", lang, register, value);
-                writeValue(fresh, "sources", lang, register, writeSource);
-                fresh.updatedAt = new Date();
-                await fresh.save({ session });
-                await recordHistory(
-                  fresh._id, projectId, lang, register, key,
-                  freshOld, value, writeSource, req.userId!, session, true
-                );
-              },
-              { requireTransaction: true }
-            );
-          } else {
-            writeValue(ex, "translations", lang, register, value);
-            writeValue(ex, "sources", lang, register, writeSource);
-            ex.updatedAt = new Date();
-            await ex.save();
-            await recordHistory(
-              ex._id, projectId, lang, register, key,
-              oldValue, value, writeSource, req.userId!
-            );
-          }
-          updated++;
-        } else {
+        if (!existing) {
           // New bulk keys are never regulated (bulk doesn't set the lock), so
-          // history stays best-effort here.
-          const newT = await Translation.create({
-            projectId: new mongoose.Types.ObjectId(projectId as string),
-            key,
-            translations: { [lang]: { [register]: value } },
-            source: "human",
-            sources: { [lang]: { [register]: "human" } },
-          });
-          await recordHistory(
-            newT._id, projectId, lang, register, key,
-            "", value, "human", req.userId!
+          // history stays best-effort here. A concurrent import racing this
+          // create loses to the unique {projectId, key} index — fall through to
+          // the update path with the winner's doc instead of 500ing the import.
+          try {
+            const newT = await Translation.create({
+              projectId: new mongoose.Types.ObjectId(projectId as string),
+              key,
+              translations: { [lang]: { [register]: value } },
+              source: "human",
+              sources: { [lang]: { [register]: "human" } },
+            });
+            await recordHistory(
+              newT._id, projectId, lang, register, key,
+              "", value, "human", req.userId!
+            );
+            created++;
+            continue;
+          } catch (e: any) {
+            if (e?.code !== 11000) throw e;
+            existing = await Translation.findOne({ projectId, key });
+            if (!existing) throw e;
+          }
+        }
+
+        {
+          // Re-fetch inside the transaction/fallback and derive the effective
+          // compliance state from that fresh document. If a concurrent owner
+          // locked the key after the pre-loop read, a standalone fallback must
+          // fail instead of writing an unaudited regulated cell.
+          await withTransactionOrFallback(
+            async (session) => {
+              const fresh = await Translation.findById(existing._id).session(session ?? null);
+              if (!fresh) return;
+              const effRegulated = (fresh as any).regulated === true;
+              if (effRegulated && !session) {
+                throw new Error("Cannot bulk-update a regulated key without transaction support");
+              }
+              const writeSource = resolveWriteSource(effRegulated, bulkIsOwner);
+              const freshOld = readValue(fresh.translations as any, lang, register) || "";
+              // Voice was generated from the OLD text — invalidate it whenever
+              // the text changes so stale IPA/SSML never keeps serving.
+              if (freshOld !== value) deleteVoiceCell(fresh, lang, register);
+              writeValue(fresh, "translations", lang, register, value);
+              writeValue(fresh, "sources", lang, register, writeSource);
+              fresh.updatedAt = new Date();
+              await fresh.save({ session });
+              await recordHistory(
+                fresh._id, projectId, lang, register, key,
+                freshOld, value, writeSource, req.userId!, session, effRegulated
+              );
+            },
+            (existing as any).regulated === true ? { requireTransaction: true } : {}
           );
-          created++;
+          updated++;
         }
       }
 
@@ -578,6 +667,7 @@ router.post(
         created,
         updated,
         skipped,
+        skippedKeys,
       });
     } catch (e) {
       return sendError(res, 500, "Failed to import translations");
@@ -614,6 +704,13 @@ router.put("/:id", async (req: AuthRequest, res: Response) => {
     if (!member) return sendError(res, 403, "Not authorized for this project");
     if (member.role === "viewer") return sendError(res, 403, "Viewers cannot edit translations");
 
+    const project = await Project.findById(translation.projectId).select("supportedLanguages defaultLanguage owner name");
+    if (!project) return sendError(res, 404, "Project not found");
+
+    if (editedLang && !project.supportedLanguages.includes(editedLang)) {
+      return sendError(res, 400, `"${editedLang}" is not a supported language for this project`);
+    }
+
     // Translator language restriction. Empty assignedLanguages = no languages
     // allowed (a translator with nothing assigned shouldn't be able to write
     // anything). Owners must assign languages explicitly when promoting a
@@ -622,6 +719,18 @@ router.put("/:id", async (req: AuthRequest, res: Response) => {
       if (!member.assignedLanguages.includes(editedLang)) {
         return sendError(res, 403, `You are not assigned to translate "${editedLang}"`);
       }
+    }
+
+    if (
+      member.role === "translator" &&
+      context !== undefined &&
+      (member.assignedLanguages || []).length === 0
+    ) {
+      return sendError(res, 403, "You must be assigned to at least one language to edit context");
+    }
+
+    if (req.body.mandatedBy !== undefined && member.role !== "owner") {
+      return sendError(res, 403, "Only project owners can change mandatedBy");
     }
 
     // Pull the new value out of the payload. We accept both the legacy flat
@@ -674,6 +783,7 @@ router.put("/:id", async (req: AuthRequest, res: Response) => {
         if (wasRegulated) (fresh as any).everRegulated = true;
 
         // Scalar field changes.
+        const oldMandatedBy = ((fresh as any).mandatedBy || "") as string;
         if (contextIntent !== undefined) fresh.context = contextIntent;
         if (mandatedByIntent !== undefined) (fresh as any).mandatedBy = mandatedByIntent;
         let lockEvent: "locked" | "unlocked" | null = null;
@@ -693,6 +803,9 @@ router.put("/:id", async (req: AuthRequest, res: Response) => {
           const effRegulated = (fresh as any).regulated === true;
           cellSource = resolveWriteSource(effRegulated, editorIsOwner);
           cellOld = readValue(fresh.translations as any, editedLang, editedRegister) || "";
+          if (cellOld !== (newValue as string)) {
+            deleteVoiceCell(fresh, editedLang, editedRegister);
+          }
           writeValue(fresh, "translations", editedLang, editedRegister, newValue as string);
           writeValue(fresh, "sources", editedLang, editedRegister, cellSource);
         }
@@ -711,8 +824,7 @@ router.put("/:id", async (req: AuthRequest, res: Response) => {
           // Stage the TM-flywheel write for AFTER commit (best-effort; must never
           // roll back the edit). Only human-verified, non-source-lang cells feed it.
           if (cellSource === "human" && (newValue as string).trim()) {
-            const proj = await Project.findById(translation.projectId).session(session ?? null);
-            const sourceLang = proj?.defaultLanguage || "en";
+            const sourceLang = project.defaultLanguage || "en";
             if (editedLang !== sourceLang) {
               const sourceText = readValue(fresh.translations as any, sourceLang, DEFAULT_REGISTER);
               if (sourceText && sourceText.trim()) {
@@ -729,6 +841,13 @@ router.put("/:id", async (req: AuthRequest, res: Response) => {
             fresh._id, fresh.projectId, editedLang || "*", editedRegister, fresh.key,
             "", lockEvent === "locked" ? `locked: ${(fresh as any).mandatedBy || ""}`.trim() : "unlocked",
             lockEvent, req.userId!, session, true
+          );
+        }
+
+        if (mandatedByIntent !== undefined && oldMandatedBy !== ((fresh as any).mandatedBy || "") && isRegNow) {
+          await recordHistory(
+            fresh._id, fresh.projectId, "*", DEFAULT_REGISTER, fresh.key,
+            oldMandatedBy, (fresh as any).mandatedBy || "", "citation", req.userId!, session, true
           );
         }
 
@@ -846,10 +965,6 @@ router.post(
       const langError = validateRequired(targetLang, "Target language");
       if (langError) return sendError(res, 400, langError);
 
-      if (targetLang === "en") {
-        return sendError(res, 400, "Cannot AI-translate to English — English is the source language");
-      }
-
       // Translator language restriction
       if (req.membership?.role === "translator") {
         if (!req.membership.assignedLanguages.includes(targetLang)) {
@@ -859,17 +974,21 @@ router.post(
 
       const project = await Project.findById(projectId);
       if (!project) return sendError(res, 404, "Project not found");
+      const sourceLang = project.defaultLanguage || "en";
 
       if (!project.supportedLanguages.includes(targetLang)) {
         return sendError(res, 400, `"${targetLang}" is not a supported language for this project`);
+      }
+      if (targetLang === sourceLang) {
+        return sendError(res, 400, `Cannot AI-translate to ${targetLang} — ${targetLang} is the source language`);
       }
 
       const allTranslations = await Translation.find({ projectId });
 
       let toTranslate = allTranslations.filter((t) => {
-        const englishSource = readValue(t.translations as any, "en", DEFAULT_REGISTER);
+        const sourceText = readValue(t.translations as any, sourceLang, DEFAULT_REGISTER);
         const existing = readValue(t.translations as any, targetLang, targetRegister);
-        return englishSource && englishSource.trim() && !(existing && existing.trim());
+        return sourceText && sourceText.trim() && !(existing && existing.trim());
       });
 
       if (keys && Array.isArray(keys) && keys.length > 0) {
@@ -936,6 +1055,7 @@ router.post(
 
       try {
       const langNames: Record<string, string> = {
+        en: "English",
         hi: "Hindi", bn: "Bengali", ur: "Urdu", ta: "Tamil", te: "Telugu",
         mr: "Marathi", ne: "Nepali", pa: "Punjabi (Gurmukhi)", "pa-PK": "Punjabi (Shahmukhi)",
         gu: "Gujarati", kn: "Kannada", ml: "Malayalam", si: "Sinhala",
@@ -951,7 +1071,7 @@ router.post(
 
       const inputs: TranslationInput[] = toTranslate.map((t) => ({
         key: t.key,
-        text: readValue(t.translations as any, "en", DEFAULT_REGISTER)!,
+        text: readValue(t.translations as any, sourceLang, DEFAULT_REGISTER)!,
         context: t.context || undefined,
       }));
 
@@ -987,6 +1107,7 @@ router.post(
 
       const aiProvider = getAIProvider();
       const targetLangName = langNames[targetLang] || targetLang;
+      const sourceLangName = langNames[sourceLang] || sourceLang;
       const aiResults = await aiProvider.translate(
         inputs,
         targetLang,
@@ -995,7 +1116,8 @@ router.post(
         glossary,
         targetRegister,
         (project as any).vertical || null,
-        controller.signal
+        controller.signal,
+        sourceLangName
       );
 
       // Client went away mid-flight (before we persisted anything) — stop here
@@ -1012,7 +1134,8 @@ router.post(
         // Stop persisting if the client disconnected mid-loop — respect the
         // cancel; the finally refunds whatever wasn't written.
         if (aborted) break;
-        if (!aiResults[t.key]) continue;
+        const aiText = ownString(aiResults as Record<string, unknown>, t.key);
+        if (!aiText) continue;
         const oldValue = readValue(t.translations as any, targetLang, targetRegister) || "";
         const tRegulated = (t as any).regulated === true;
         try {
@@ -1025,27 +1148,31 @@ router.post(
                 const fresh = await Translation.findById(t._id).session(session ?? null);
                 if (!fresh) throw new Error("key vanished mid-translate");
                 const freshOld = readValue(fresh.translations as any, targetLang, targetRegister) || "";
-                writeValue(fresh, "translations", targetLang, targetRegister, aiResults[t.key]);
+                // Invalidate voice generated from the old text (incl. orphaned
+                // voice on a now-empty cell from legacy data).
+                if (freshOld !== aiText) deleteVoiceCell(fresh, targetLang, targetRegister);
+                writeValue(fresh, "translations", targetLang, targetRegister, aiText);
                 writeValue(fresh, "sources", targetLang, targetRegister, "ai");
                 fresh.source = "ai";
                 fresh.updatedAt = new Date();
                 await fresh.save({ session });
                 await recordHistory(
                   fresh._id, projectId, targetLang, targetRegister, fresh.key,
-                  freshOld, aiResults[t.key], "ai", req.userId!, session, true
+                  freshOld, aiText, "ai", req.userId!, session, true
                 );
               },
               { requireTransaction: true }
             );
           } else {
-            writeValue(t, "translations", targetLang, targetRegister, aiResults[t.key]);
+            if (oldValue !== aiText) deleteVoiceCell(t, targetLang, targetRegister);
+            writeValue(t, "translations", targetLang, targetRegister, aiText);
             writeValue(t, "sources", targetLang, targetRegister, "ai");
             t.source = "ai";
             t.updatedAt = new Date();
             await t.save();
             await recordHistory(
               t._id, projectId, targetLang, targetRegister, t.key,
-              oldValue, aiResults[t.key], "ai", req.userId!
+              oldValue, aiText, "ai", req.userId!
             );
           }
           // Count the cell the instant it's durably saved (+ audited, if
@@ -1088,7 +1215,7 @@ router.post(
       // error) PLUS regulated keys whose atomic audit write failed — reported
       // back instead of being silently lost.
       const failedKeys = [
-        ...toTranslate.filter((t) => !aiResults[t.key]).map((t) => t.key),
+        ...toTranslate.filter((t) => !ownString(aiResults as Record<string, unknown>, t.key)).map((t) => t.key),
         ...writeFailedKeys,
       ];
 
@@ -1190,6 +1317,7 @@ router.post("/:id/review", async (req: AuthRequest, res: Response) => {
             const inner = srMap.get(lang);
             if (inner instanceof Map) inner.delete(register);
           }
+          deleteVoiceCell(fresh, lang, register);
           fresh.markModified("translations");
           fresh.markModified("sources");
         }
@@ -1225,7 +1353,7 @@ router.post("/:id/review", async (req: AuthRequest, res: Response) => {
               context: translation.context || undefined,
               createdAt: new Date(),
             },
-            { upsert: true, new: true }
+            { upsert: true, returnDocument: "after" }
           );
         }
       } catch (_) {
@@ -1490,7 +1618,7 @@ router.post(
       const generatedKeys: string[] = [];
       for (const t of candidates) {
         if (aborted) break; // client disconnected mid-loop — stop; finally refunds the rest
-        const result = aiResults[t.key];
+        const result = ownVoice(aiResults as Record<string, unknown>, t.key);
         if (!result) continue;
 
         // Write voice[lang][register] = { ipa, ssml } through the shared helper.

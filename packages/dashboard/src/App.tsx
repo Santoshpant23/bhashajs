@@ -6,11 +6,13 @@
  * PublicRoute: redirects to /projects if already logged in.
  */
 
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation, useParams } from "react-router-dom";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { NotificationProvider } from "./context/NotificationContext";
 import LoginPage from "./pages/LoginPage";
 import RegisterPage from "./pages/RegisterPage";
+import ForgotPasswordPage from "./pages/ForgotPasswordPage";
+import ResetPasswordPage from "./pages/ResetPasswordPage";
 import ProjectsPage from "./pages/ProjectsPage";
 import TranslationEditor from "./pages/TranslationEditor";
 import DemoPage from "./pages/DemoPage";
@@ -18,7 +20,11 @@ import JoinPage from "./pages/JoinPage";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isLoggedIn } = useAuth();
-  if (!isLoggedIn) return <Navigate to="/login" />;
+  const location = useLocation();
+  if (!isLoggedIn) {
+    const redirect = encodeURIComponent(location.pathname + location.search);
+    return <Navigate to={`/login?redirect=${redirect}`} replace />;
+  }
   return <>{children}</>;
 }
 
@@ -39,13 +45,20 @@ function PublicRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function ProjectEditorRoute() {
+  const { projectId } = useParams<{ projectId: string }>();
+  return <TranslationEditor key={projectId} />;
+}
+
 function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
       <Route path="/register" element={<PublicRoute><RegisterPage /></PublicRoute>} />
+      <Route path="/forgot-password" element={<PublicRoute><ForgotPasswordPage /></PublicRoute>} />
+      <Route path="/reset-password" element={<PublicRoute><ResetPasswordPage /></PublicRoute>} />
       <Route path="/projects" element={<ProtectedRoute><ProjectsPage /></ProtectedRoute>} />
-      <Route path="/projects/:projectId" element={<ProtectedRoute><TranslationEditor /></ProtectedRoute>} />
+      <Route path="/projects/:projectId" element={<ProtectedRoute><ProjectEditorRoute /></ProtectedRoute>} />
       <Route path="/join" element={<JoinPage />} />
       <Route path="/demo" element={<DemoPage />} />
       <Route path="*" element={<Navigate to="/login" />} />

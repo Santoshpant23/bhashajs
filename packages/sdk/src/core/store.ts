@@ -101,6 +101,7 @@ export class BhashaStore {
       projectKey = "",
       apiUrl = DEFAULT_API_URL,
       apiToken = "",
+      persistCache = true,
       region,
       voice = false,
       defaultLang = "en",
@@ -111,7 +112,7 @@ export class BhashaStore {
       applyDocument = true,
     } = config;
 
-    this.client = new TranslationClient(projectId, apiUrl, apiToken, projectKey);
+    this.client = new TranslationClient(projectId, apiUrl, apiToken, projectKey, { persistCache });
     if (preloadedTranslations) this.client.preload(preloadedTranslations);
 
     this.region = region;
@@ -138,6 +139,7 @@ export class BhashaStore {
     if (preloadedTranslations) {
       this.client.setSupportedLangs(this.state.supportedLangs);
     }
+    this.client.setOnBundleUpdate(() => this.emit({}));
   }
 
   /** Current state snapshot. Returns a shallow copy so a consumer (or a

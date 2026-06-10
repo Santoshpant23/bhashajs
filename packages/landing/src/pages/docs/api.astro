@@ -24,6 +24,7 @@ import DocLayout from "../../components/DocLayout.astro";
       <tr><td><code>projectId</code></td><td><code>string</code></td><td>—</td><td>For JWT auth (advanced).</td></tr>
       <tr><td><code>apiToken</code></td><td><code>string</code></td><td>—</td><td>JWT for advanced auth.</td></tr>
       <tr><td><code>preloadedTranslations</code></td><td><code>Record&lt;string, Record&lt;string, string&gt;&gt;</code></td><td>—</td><td>Bundle translations into your app (Mode 1).</td></tr>
+      <tr><td><code>persistCache</code></td><td><code>boolean</code></td><td><code>true</code></td><td>Persist fetched text bundles to <code>localStorage</code> and refresh them in the background.</td></tr>
       <tr><td><code>defaultLang</code></td><td><code>string</code></td><td><code>"en"</code></td><td>Initial language code.</td></tr>
       <tr><td><code>apiUrl</code></td><td><code>string</code></td><td><code>"https://api.bhashajs.com/api"</code></td><td>API base URL (override for self-hosting, e.g. <code>"https://my.host/api"</code>).</td></tr>
       <tr><td><code>region</code></td><td><code>string</code></td><td>—</td><td>Region override: <code>"IN"</code>, <code>"BD"</code>, <code>"PK"</code>, <code>"LK"</code>, <code>"NP"</code>. Affects currency + Intl locale.</td></tr>
@@ -134,4 +135,13 @@ import DocLayout from "../../components/DocLayout.astro";
 
   <h3><code>getLangInfo(lang)</code>, <code>LANGUAGES</code>, <code>REGION_OVERRIDES</code></h3>
   <p>Read-only access to the language metadata database.</p>
+
+  <h2>Public SDK API</h2>
+  <table>
+    <thead><tr><th>Endpoint</th><th>Auth</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET /api/sdk/translations?lang=hi&amp;register=formal</code></td><td><code>x-api-key</code></td><td>Fetch a flat text bundle.</td></tr>
+      <tr><td><code>POST /api/sdk/push</code></td><td><code>x-api-key</code></td><td>Push flat or nested locale JSON with a write-capable scoped key. Regulated keys are skipped for dashboard review.</td></tr>
+    </tbody>
+  </table>
 </DocLayout>

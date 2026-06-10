@@ -51,6 +51,7 @@ export function I18nProvider({
   apiUrl = DEFAULT_API_URL,
   apiToken = "",
   preloadedTranslations,
+  persistCache = true,
   onLanguageChange,
   region,
   register: initialRegister = DEFAULT_REGISTER,
@@ -116,18 +117,21 @@ export function I18nProvider({
   // in-flight init the instant a switch is observed). setLang/setRegister do
   // NOT touch it.
   const initReqRef = useRef(0);
+  const didSyncSegmentPropRef = useRef(false);
+  const lastSegmentRulesRef = useRef(segmentRules);
+  const lastUserSegmentPropRef = useRef(userSegment);
 
   // Create the client on mount — and RECREATE it if the identifying config
   // changes, so a changed projectId/projectKey doesn't keep serving the old
   // project's data.
-  const clientConfig = `${projectId}|${projectKey}|${apiUrl}|${apiToken}`;
+  const clientConfig = `${projectId}|${projectKey}|${apiUrl}|${apiToken}|${persistCache}`;
   if (!clientRef.current || clientConfigRef.current !== clientConfig) {
     // Distinguish a genuine PROJECT SWITCH (the client already existed for a
     // different config) from the FIRST mount. Only a switch needs the locale
     // reset below — on first mount state already holds the right defaults.
     const isProjectSwitch = clientRef.current !== null;
 
-    clientRef.current = new TranslationClient(projectId, apiUrl, apiToken, projectKey);
+    clientRef.current = new TranslationClient(projectId, apiUrl, apiToken, projectKey, { persistCache });
     clientConfigRef.current = clientConfig;
 
     // If preloaded translations were provided, load them into cache immediately
@@ -156,6 +160,7 @@ export function I18nProvider({
   }
 
   const client = clientRef.current;
+  client.setOnBundleUpdate(() => setRenderTrigger((p) => p + 1));
 
   // ─── Initialization ──────────────────────────────────────────
 
@@ -187,7 +192,7 @@ export function I18nProvider({
       { setIsLoading, setError, setSupportedLangs, bumpRenderTrigger: () => setRenderTrigger((p) => p + 1) }
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, projectKey, apiUrl, apiToken]); // Re-init when the project identity changes
+  }, [projectId, projectKey, apiUrl, apiToken, persistCache]); // Re-init when the project identity changes
 
   // ─── Atomic locale switching ─────────────────────────────────
   // (lang, register) is ONE locale target. Every switch updates the pending
@@ -297,6 +302,25 @@ export function I18nProvider({
     },
     [segmentRules, applyLocale]
   );
+
+  useEffect(() => {
+    if (!didSyncSegmentPropRef.current) {
+      didSyncSegmentPropRef.current = true;
+      lastSegmentRulesRef.current = segmentRules;
+      lastUserSegmentPropRef.current = userSegment;
+      return;
+    }
+    // React ONLY to PROP changes (userSegment / segmentRules identity), never to
+    // currentSegment — otherwise a manual runtime setSegment() would be reverted
+    // back to the prop value the moment this effect re-fires.
+    const rulesChanged = lastSegmentRulesRef.current !== segmentRules;
+    const propChanged = lastUserSegmentPropRef.current !== userSegment;
+    lastSegmentRulesRef.current = segmentRules;
+    lastUserSegmentPropRef.current = userSegment;
+    if (userSegment !== undefined && (rulesChanged || propChanged)) {
+      void setSegment(userSegment);
+    }
+  }, [userSegment, segmentRules, setSegment]);
 
   // ─── The t() function ────────────────────────────────────────
 

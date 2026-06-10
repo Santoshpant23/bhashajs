@@ -235,6 +235,7 @@ router.get(
           "reviewClean",
           "complete",
           "missingLanguages",
+          "deleted",
           "lang",
           "register",
           "oldValue",
@@ -252,6 +253,7 @@ router.get(
             String(k.reviewClean),
             String(k.complete),
             k.missingLanguages.join(" "),
+            String(k.deleted),
           ];
           if (k.history.length === 0) {
             // No audit events yet — still record the key + its current state.

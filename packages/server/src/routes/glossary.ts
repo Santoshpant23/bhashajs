@@ -81,10 +81,15 @@ router.put(
       const entry = await GlossaryEntry.findOne({ _id: id, projectId });
       if (!entry) return sendError(res, 404, "Glossary entry not found");
 
-      if (term !== undefined) entry.term = term.trim();
+      if (term !== undefined) {
+        if (typeof term !== "string") return sendError(res, 400, "Term must be a string");
+        entry.term = term.trim();
+      }
       if (translations !== undefined) {
         for (const [lang, val] of Object.entries(translations)) {
-          entry.translations.set(lang, val as string);
+          if (typeof val !== "string") continue;
+          if (val === "") entry.translations.delete(lang);
+          else entry.translations.set(lang, val);
         }
       }
       if (notes !== undefined) entry.notes = notes.trim();

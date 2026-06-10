@@ -246,6 +246,7 @@ app.use("/api/translations/:projectId/ai-translate", aiLimiter);
 // neither AI endpoint can be used to run up the model bill.
 app.use("/api/translations/:projectId/generate-voice", aiLimiter);
 app.use("/api/translations/:projectId/bulk", writeLimiter);
+app.use("/api/sdk/push", writeLimiter);
 app.use("/api/projects/:projectId/team/invite", writeLimiter);
 // Project creation is POST /api/projects — throttle it without touching the
 // GET list on the same path.

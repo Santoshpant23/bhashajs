@@ -154,6 +154,16 @@ button[aria-disabled="true"] {
   margin-bottom: 1.25rem;
 }
 
+.success-banner {
+  background: var(--success-subtle);
+  border: 1px solid rgba(58, 181, 119, 0.25);
+  color: #70d69d;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.875rem;
+  margin-bottom: 1.25rem;
+}
+
 .auth-footer {
   text-align: center;
   margin-top: 1.5rem;
@@ -2323,6 +2333,12 @@ kbd {
   color: #f59e0b;
 }
 
+.review-queue-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .btn-review-approve {
   display: flex;
   align-items: center;
@@ -2338,6 +2354,11 @@ kbd {
   transition: background 0.15s;
 }
 .btn-review-approve:hover { background: #22c55e20; }
+.btn-review-approve:disabled,
+.btn-review-reject:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
 
 .btn-review-reject {
   display: flex;

@@ -23,7 +23,8 @@ export default function RegisterPage() {
   // Allow JoinPage to round-trip through register and back: /register?redirect=/join?token=...
   // Restrict to internal paths so an attacker can't craft an open-redirect URL.
   const redirect = searchParams.get("redirect");
-  const safeRedirect = redirect && redirect.startsWith("/") ? redirect : "/projects";
+  const redirectParam = redirect && /^\/(?![/\\])/.test(redirect) ? redirect : null;
+  const safeRedirect = redirectParam || "/projects";
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -88,7 +89,7 @@ export default function RegisterPage() {
 
         <p className="auth-footer">
           Already have an account?{" "}
-          <Link to={redirect ? `/login?redirect=${encodeURIComponent(redirect)}` : "/login"}>
+          <Link to={redirectParam ? `/login?redirect=${encodeURIComponent(redirectParam)}` : "/login"}>
             Sign in
           </Link>
         </p>

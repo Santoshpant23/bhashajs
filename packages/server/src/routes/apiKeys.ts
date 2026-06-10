@@ -94,6 +94,11 @@ router.post(
       const nameError = validateRequired(name, "Key name");
       if (nameError) return sendError(res, 400, nameError);
 
+      const activeCount = await ApiKey.countDocuments({ projectId, revoked: { $ne: true } });
+      if (activeCount >= 50) {
+        return sendError(res, 400, "A project can have at most 50 active API keys");
+      }
+
       const apiKey = await ApiKey.create({
         projectId: projectId as string,
         key: generateApiKey(),
@@ -152,7 +157,7 @@ router.post(
       const updated = await ApiKey.findOneAndUpdate(
         { _id: keyId, projectId },
         { revoked: true },
-        { new: true }
+        { returnDocument: "after" }
       );
 
       if (!updated) return sendError(res, 404, "API key not found");

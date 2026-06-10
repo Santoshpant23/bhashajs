@@ -38,8 +38,5 @@ interface TransProps {
 export function Trans({ id, params, as: Component = "span", ...rest }: TransProps) {
   const { t } = useTranslation();
 
-  // Remove our custom props before spreading to the DOM element
-  const { ...domProps } = rest;
-
-  return createElement(Component, domProps, t(id, params));
+  return createElement(Component, rest, t(id, params));
 }

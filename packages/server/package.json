@@ -17,10 +17,6 @@
   "type": "commonjs",
   "dependencies": {
     "@google/genai": "^2.7.0",
-    "@types/cors": "^2.8.19",
-    "@types/express": "^5.0.6",
-    "@types/jsonwebtoken": "^9.0.10",
-    "@types/mongoose": "^5.11.96",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
@@ -32,6 +28,9 @@
     "nodemailer": "^8.0.10"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/nodemailer": "^6.4.17",
     "@types/supertest": "^6.0.0",
     "mongodb-memory-server": "^10.1.2",

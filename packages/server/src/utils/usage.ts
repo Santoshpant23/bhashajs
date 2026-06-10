@@ -130,7 +130,7 @@ export async function reserveUsage(
   const updated = await AiUsage.findOneAndUpdate(
     { projectId, period, keysTranslated: { $lte: cap - count } },
     { $inc: inc, $set: { updatedAt: new Date() } },
-    { new: true }
+    { returnDocument: "after" }
   );
   return updated != null;
 }
@@ -221,7 +221,7 @@ async function reserveCounter(
   const updated = await UsageCounter.findOneAndUpdate(
     { scope, period, keysTranslated: { $lte: cap - count } },
     { $inc: { keysTranslated: count }, $set: { updatedAt: new Date() } },
-    { new: true }
+    { returnDocument: "after" }
   );
   return updated != null;
 }

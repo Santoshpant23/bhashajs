@@ -56,7 +56,8 @@ export interface AITranslationProvider {
     glossary?: GlossaryTerm[],
     register?: Register,
     vertical?: string | null,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    sourceLangName?: string
   ): Promise<Record<string, string>>;
 
   /**
@@ -281,7 +282,7 @@ export function extractJsonObject(raw: string): Record<string, any> {
 // Kannada, Malayalam, Sinhala, and Arabic (+ supplement) — every non-Latin
 // script behind a supported locale. A unit test asserts the coverage.
 const NON_LATIN_SCRIPT =
-  /[ऀ-ॿঀ-৿਀-੿઀-૿଀-୿஀-௿ఀ-౿ಀ-೿ഀ-ൿ඀-෿؀-ۿݐ-ݿ]/;
+  /[\u0900-\u097F\u0980-\u09FF\u0A00-\u0A7F\u0A80-\u0AFF\u0B00-\u0B7F\u0B80-\u0BFF\u0C00-\u0C7F\u0C80-\u0CFF\u0D00-\u0D7F\u0D80-\u0DFF\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/u;
 
 /** True if the string contains any non-Latin South Asian script — used to
  *  reject AI output that returned native script into a Romanized -Latn locale. */
@@ -343,12 +344,13 @@ class GeminiProvider implements AITranslationProvider {
     glossary?: GlossaryTerm[],
     register: Register = "default",
     vertical?: string | null,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    sourceLangName = "English"
   ): Promise<Record<string, string>> {
     if (texts.length === 0) return {};
 
     const isLatinScript = targetLang.endsWith("-Latn");
-    const output: Record<string, string> = {};
+    const output: Record<string, string> = Object.create(null);
 
     // Chunk so one large/odd response can't fail the whole job. Each batch is
     // independent: a batch that errors leaves its keys unfilled (reported as
@@ -357,7 +359,7 @@ class GeminiProvider implements AITranslationProvider {
 
     const processBatch = async (batch: TranslationInput[]): Promise<Array<[string, string]>> => {
       const prompt = this.buildTranslatePrompt(
-        batch, targetLang, targetLangName, memory, glossary, register, vertical
+        batch, targetLang, targetLangName, memory, glossary, register, vertical, sourceLangName
       );
 
       let parsed: Record<string, any> = {};
@@ -388,6 +390,7 @@ class GeminiProvider implements AITranslationProvider {
 
       const accepted: Array<[string, string]> = [];
       for (const t of batch) {
+        if (!Object.prototype.hasOwnProperty.call(parsed, t.key)) continue;
         const val = parsed[t.key];
         if (typeof val !== "string" || !val.trim()) continue;
         // Script guard: never store native script into a -Latn locale — that
@@ -433,7 +436,8 @@ class GeminiProvider implements AITranslationProvider {
     memory: MemoryExample[] | undefined,
     glossary: GlossaryTerm[] | undefined,
     register: Register,
-    vertical: string | null | undefined
+    vertical: string | null | undefined,
+    sourceLangName = "English"
   ): string {
     const items = texts.map((t) => {
       let entry = `${JSON.stringify(t.key)}: ${JSON.stringify(t.text)}`;
@@ -475,7 +479,7 @@ class GeminiProvider implements AITranslationProvider {
 
     return `You are a professional UI translator specializing in South Asian languages.
 
-Translate the following UI strings from English to ${targetLangName} (${targetLang}) at the "${register}" register.
+Translate the following UI strings from ${sourceLangName} to ${targetLangName} (${targetLang}) at the "${register}" register.
 
 REGISTER GUIDE for "${register}":
 ${styleGuide}
@@ -570,8 +574,9 @@ ${items}`;
       }
     }
 
-    const output: Record<string, VoiceOutput> = {};
+    const output: Record<string, VoiceOutput> = Object.create(null);
     for (const i of inputs) {
+      if (!Object.prototype.hasOwnProperty.call(parsed, i.key)) continue;
       const cell = parsed[i.key];
       if (
         cell &&

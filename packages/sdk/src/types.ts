@@ -57,6 +57,13 @@ export interface BhashaConfig {
   preloadedTranslations?: Record<string, Record<string, string>>;
 
   /**
+   * Persist fetched text bundles in localStorage for offline/first-paint reuse.
+   * The SDK serves the cached bundle immediately, then refreshes in the background.
+   * @default true
+   */
+  persistCache?: boolean;
+
+  /**
    * Called whenever the language changes.
    * Useful for analytics, saving preference to localStorage, etc.
    */

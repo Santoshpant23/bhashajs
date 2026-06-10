@@ -86,6 +86,8 @@ import ur from "./locales/ur.json";
 
 No API call. No backend. You ship the JSON in your bundle.
 
+Locale JSON can be flat or nested. Nested objects are flattened with dots by the CLI and import tools, so `{ "checkout": { "title": "Checkout" } }` becomes `checkout.title`.
+
 ### Mode 2 · Hosted dashboard (recommended for production)
 
 Sign up at **[bhashajs.com](https://bhashajs.com)**, create a project, get an API key, and translations are managed in a UI (with AI translation, team review, glossary, history).
@@ -99,7 +101,7 @@ Sign up at **[bhashajs.com](https://bhashajs.com)**, create a project, get an AP
 </I18nProvider>
 ```
 
-The SDK fetches translations from `https://api.bhashajs.com/api` using the `x-api-key` header. Cached in memory after first load — language switching is instant.
+The SDK fetches translations from `https://api.bhashajs.com/api` using the `x-api-key` header. Bundles are cached in memory and, by default, persisted to `localStorage` for stale-while-revalidate first paint. Set `persistCache={false}` to disable storage.
 
 ### Mode 3 · Self-hosted
 
@@ -264,6 +266,17 @@ formatDate(new Date(), "hi", undefined, { preset: "long", useNativeDigits: true 
 
 ---
 
+## CLI
+
+```bash
+npx bhasha init
+npx bhasha pull
+npx bhasha push --lang hi --register formal
+npx bhasha scan --strict
+```
+
+`bhasha push` reads flat or nested JSON files from `locales/` and sends them to the dashboard. Use a scoped API key with read-only OFF and no origin allowlist. Regulated keys are reported as skipped because they can only be edited by a human in the dashboard.
+
 ## API reference
 
 ### `<I18nProvider>`
@@ -273,6 +286,7 @@ formatDate(new Date(), "hi", undefined, { preset: "long", useNativeDigits: true 
 | `projectKey` | `string` | — | Project API key (Mode 2/3). Recommended for production. |
 | `projectId` + `apiToken` | `string` + `string` | — | JWT auth (advanced). |
 | `preloadedTranslations` | `Record<string, Record<string, string>>` | — | Mode 1 — bundle translations into your app. |
+| `persistCache` | `boolean` | `true` | Persist fetched text bundles to `localStorage` and refresh them in the background. |
 | `defaultLang` | `string` | `"en"` | Initial language code. |
 | `apiUrl` | `string` | `"https://api.bhashajs.com/api"` | Override for self-hosting (e.g. `"https://my.host/api"`). |
 | `region` | `string` | — | Override default region (e.g. `"IN"`, `"BD"`, `"PK"`, `"LK"`, `"NP"`). Affects currency + locale. |

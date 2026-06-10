@@ -19,7 +19,7 @@ import Translation from "../models/Translation";
 import TranslationHistory from "../models/TranslationHistory";
 import { sendSuccess, sendError } from "../utils/response";
 import { validateRequired } from "../utils/validate";
-import { coerceRegister, readValue, writeValue, Register } from "../utils/registers";
+import { coerceRegister, readValue, writeValue, deleteVoiceCell, Register } from "../utils/registers";
 import { isValidRegister } from "../models/Translation";
 import { withTransactionOrFallback } from "../utils/transaction";
 
@@ -155,7 +155,7 @@ router.post(
 
         const projectObjectId = new mongoose.Types.ObjectId(projectId as string);
         let existing = await Translation.findOne({ projectId: projectObjectId, key: item.key });
-        const isNew = !existing;
+        let isNew = !existing;
         const itemMandate = typeof item.mandatedBy === "string" ? item.mandatedBy.trim() : "";
         // Scalar-field INTENTS from the pack, re-applied to the freshly re-fetched
         // doc INSIDE the transaction (the in-memory mutation here is for the
@@ -164,19 +164,27 @@ router.post(
         const promoteRegulated = !!itemMandate;
         const contextIntent = item.context ? String(item.context) : "";
         if (!existing) {
-          existing = await Translation.create({
-            projectId: projectObjectId,
-            key: item.key,
-            translations: {},
-            sources: {},
-            context: item.context || undefined,
-            source: "human",
-            // Pack items with a regulator citation lock the key automatically.
-            // Owners can untick this in the dashboard if they really mean to.
-            regulated: !!itemMandate,
-            mandatedBy: itemMandate,
-          });
-        } else {
+          try {
+            existing = await Translation.create({
+              projectId: projectObjectId,
+              key: item.key,
+              translations: {},
+              sources: {},
+              context: item.context || undefined,
+              source: "human",
+              // Pack items with a regulator citation lock the key automatically.
+              // Owners can untick this in the dashboard if they really mean to.
+              regulated: !!itemMandate,
+              mandatedBy: itemMandate,
+            });
+          } catch (e: any) {
+            if (e?.code !== 11000) throw e;
+            existing = await Translation.findOne({ projectId: projectObjectId, key: item.key });
+            if (!existing) throw e;
+            isNew = false;
+          }
+        }
+        if (!isNew) {
           if (item.context && !existing.context) {
             existing.context = item.context;
           }
@@ -279,10 +287,17 @@ router.post(
                 (fresh as any).regulated = true;
                 if (!(fresh as any).mandatedBy) (fresh as any).mandatedBy = itemMandate;
               }
+              const freshRegulated = (fresh as any).regulated === true;
+              if (freshRegulated && !session) {
+                throw new Error("Cannot import a regulated pack item without transaction support");
+              }
               for (const w of cellWrites) {
                 // oldValue from the FRESH (committed) doc — the real predecessor,
                 // so a concurrent overwrite chains off the right value.
                 const freshOld = (readValue(fresh.translations as any, w.lang, w.register) as string) || "";
+                w.cellSource = freshRegulated ? "pending" : "approved";
+                // Voice was generated from the OLD text — invalidate on change.
+                if (freshOld !== w.newValue) deleteVoiceCell(fresh, w.lang, w.register);
                 writeValue(fresh, "translations", w.lang, w.register, w.newValue);
                 writeValue(fresh, "sources", w.lang, w.register, w.cellSource);
                 w.oldValue = freshOld;
@@ -303,7 +318,7 @@ router.post(
                   "human",
                   req.userId!,
                   session,
-                  isRegulated
+                  freshRegulated
                 );
               }
             },

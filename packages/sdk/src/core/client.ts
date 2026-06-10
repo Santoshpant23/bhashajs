@@ -23,6 +23,9 @@ import { getPluralCategory } from "../utils/plurals";
 import type { Register } from "../types";
 
 const DEFAULT_REGISTER: Register = "default";
+type ClientOptions = {
+  persistCache?: boolean;
+};
 
 /** Compose the cache key. We flatten (lang, register) so the inner cache
  *  stays a simple Record<key, string>. */
@@ -30,11 +33,29 @@ function bundleKey(lang: string, register: Register): string {
   return `${lang}:${register}`;
 }
 
+function ownString(obj: Record<string, string>, key: string): string | undefined {
+  if (!Object.prototype.hasOwnProperty.call(obj, key)) return undefined;
+  const value = obj[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function ownVoice(
+  obj: Record<string, { ipa: string; ssml: string }>,
+  key: string
+): { ipa: string; ssml: string } | undefined {
+  if (!Object.prototype.hasOwnProperty.call(obj, key)) return undefined;
+  const value = obj[key];
+  if (!value || typeof value !== "object") return undefined;
+  return value;
+}
+
 export class TranslationClient {
   private projectId: string;
   private apiUrl: string;
   private apiToken: string;
   private projectKey: string;
+  private persistCache: boolean;
+  private onBundleUpdate?: () => void;
 
   /**
    * Cache structure: keyed by `${lang}:${register}`, mapping to a flat
@@ -67,11 +88,18 @@ export class TranslationClient {
   /** List of supported languages, fetched from the project endpoint */
   private supportedLangs: string[] = [];
 
-  constructor(projectId: string, apiUrl: string, apiToken: string, projectKey: string = "") {
+  constructor(
+    projectId: string,
+    apiUrl: string,
+    apiToken: string,
+    projectKey: string = "",
+    options: ClientOptions = {}
+  ) {
     this.projectId = projectId;
     this.apiUrl = apiUrl;
     this.apiToken = apiToken;
     this.projectKey = projectKey;
+    this.persistCache = options.persistCache !== false;
   }
 
   /** Whether this client uses the public SDK endpoints (API key auth) */
@@ -120,6 +148,10 @@ export class TranslationClient {
     this.supportedLangs = langs;
   }
 
+  setOnBundleUpdate(fn?: (() => void) | null): void {
+    this.onBundleUpdate = fn || undefined;
+  }
+
   getSupportedLangs(): string[] {
     return this.supportedLangs;
   }
@@ -145,6 +177,13 @@ export class TranslationClient {
     // Already cached? Return immediately (instant language switching!)
     if (this.cache[cacheKey]) {
       return this.cache[cacheKey];
+    }
+
+    const persisted = this.readPersistedBundle(lang, register);
+    if (persisted) {
+      this.cache[cacheKey] = persisted;
+      this.refreshTranslationsInBackground(lang, register, cacheKey, persisted);
+      return persisted;
     }
 
     // Already fetching? Wait for the existing promise
@@ -185,6 +224,7 @@ export class TranslationClient {
         const translations = json.data || json;
 
         this.cache[cacheKey] = translations;
+        this.writePersistedBundle(lang, register, translations);
         return translations;
       } finally {
         delete this.fetchPromises[cacheKey];
@@ -195,6 +235,114 @@ export class TranslationClient {
     this.fetchPromises[cacheKey] = fetchPromise;
 
     return fetchPromise;
+  }
+
+  private refreshTranslationsInBackground(
+    lang: string,
+    register: Register,
+    cacheKey: string,
+    current: Record<string, string>
+  ): void {
+    if (cacheKey in this.fetchPromises) return;
+    const fetchPromise = (async () => {
+      try {
+        const params = `lang=${encodeURIComponent(lang)}&register=${encodeURIComponent(register)}`;
+        const url = this.usePublicEndpoints
+          ? `${this.apiUrl}/sdk/translations?${params}`
+          : `${this.apiUrl}/translations/${this.projectId}?${params}`;
+
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+        };
+
+        if (this.usePublicEndpoints) {
+          headers["x-api-key"] = this.projectKey;
+        } else if (this.apiToken) {
+          headers["Authorization"] = `Bearer ${this.apiToken}`;
+        }
+
+        const response = await fetch(url, { headers });
+        if (!response.ok) return current;
+
+        const json = await response.json();
+        const fresh = json.data || json;
+        if (JSON.stringify(fresh) !== JSON.stringify(current)) {
+          this.cache[cacheKey] = fresh;
+          this.writePersistedBundle(lang, register, fresh);
+          this.onBundleUpdate?.();
+        }
+        return fresh;
+      } catch {
+        return current;
+      } finally {
+        delete this.fetchPromises[cacheKey];
+      }
+    })();
+    this.fetchPromises[cacheKey] = fetchPromise;
+  }
+
+  private persistedStorageKey(lang: string, register: Register): string {
+    return `bhashajs:b1:${this.projectKey || this.projectId}:${lang}:${register}`;
+  }
+
+  private persistedLangsKey(): string {
+    return `bhashajs:p1:${this.projectKey || this.projectId}`;
+  }
+
+  private readPersistedLangs(): string[] | null {
+    if (!this.persistCache || typeof localStorage === "undefined") return null;
+    try {
+      const raw = localStorage.getItem(this.persistedLangsKey());
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || parsed.v !== 1 || !Array.isArray(parsed.langs)) return null;
+      return parsed.langs.filter((l: unknown) => typeof l === "string");
+    } catch {
+      return null;
+    }
+  }
+
+  private writePersistedLangs(langs: string[]): void {
+    if (!this.persistCache || typeof localStorage === "undefined") return;
+    try {
+      localStorage.setItem(
+        this.persistedLangsKey(),
+        JSON.stringify({ v: 1, t: Date.now(), langs })
+      );
+    } catch {
+      // Storage is best-effort: quota/privacy-mode errors must not break i18n.
+    }
+  }
+
+  private readPersistedBundle(lang: string, register: Register): Record<string, string> | null {
+    if (!this.persistCache || typeof localStorage === "undefined") return null;
+    try {
+      const raw = localStorage.getItem(this.persistedStorageKey(lang, register));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || parsed.v !== 1 || !parsed.data || typeof parsed.data !== "object") {
+        return null;
+      }
+      return parsed.data;
+    } catch {
+      return null;
+    }
+  }
+
+  private writePersistedBundle(
+    lang: string,
+    register: Register,
+    data: Record<string, string>
+  ): void {
+    if (!this.persistCache || typeof localStorage === "undefined") return;
+    try {
+      localStorage.setItem(
+        this.persistedStorageKey(lang, register),
+        JSON.stringify({ v: 1, t: Date.now(), data })
+      );
+    } catch {
+      // Storage is best-effort: quota/privacy-mode errors must not break i18n.
+    }
   }
 
   /**
@@ -260,7 +408,10 @@ export class TranslationClient {
     for (const fallbackLang of chain) {
       for (const reg of registerFallback(register)) {
         const bundle = this.voiceCache[bundleKey(fallbackLang, reg)];
-        if (bundle && bundle[key]) return bundle[key];
+        if (bundle) {
+          const cell = ownVoice(bundle, key);
+          if (cell) return cell;
+        }
       }
     }
     return undefined;
@@ -304,7 +455,21 @@ export class TranslationClient {
       headers["Authorization"] = `Bearer ${this.apiToken}`;
     }
 
-    const response = await fetch(url, { headers });
+    let response: Response;
+    try {
+      response = await fetch(url, { headers });
+    } catch (networkError) {
+      // OFFLINE / network failure (not an HTTP error): fall back to the
+      // persisted language list so a cold start can still serve cached
+      // bundles. An HTTP-level rejection (e.g. a revoked key → 401) is a real
+      // error and still throws below — never masked by the cache.
+      const cached = this.readPersistedLangs();
+      if (cached && cached.length > 0) {
+        this.supportedLangs = cached;
+        return this.supportedLangs;
+      }
+      throw networkError;
+    }
 
     if (!response.ok) {
       const detail = await response.text().catch(() => "");
@@ -317,6 +482,7 @@ export class TranslationClient {
     const project = json.data || json;
 
     this.supportedLangs = project.supportedLanguages || [];
+    this.writePersistedLangs(this.supportedLangs);
     return this.supportedLangs;
   }
 
@@ -368,18 +534,21 @@ export class TranslationClient {
 
         if (hasCount) {
           const category = getPluralCategory(count, fallbackLang);
-          if (langCache[`${key}_${category}`]) {
-            result = langCache[`${key}_${category}`];
+          const categoryValue = ownString(langCache, `${key}_${category}`);
+          if (categoryValue) {
+            result = categoryValue;
             break outer;
           }
-          if (category !== "other" && langCache[`${key}_other`]) {
-            result = langCache[`${key}_other`];
+          const otherValue = category !== "other" ? ownString(langCache, `${key}_other`) : undefined;
+          if (otherValue) {
+            result = otherValue;
             break outer;
           }
         }
 
-        if (langCache[key]) {
-          result = langCache[key];
+        const value = ownString(langCache, key);
+        if (value) {
+          result = value;
           break outer;
         }
       }

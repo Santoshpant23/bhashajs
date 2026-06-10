@@ -20,12 +20,25 @@ import Project from "../models/Project";
 import User from "../models/User";
 import Notification from "../models/Notification";
 import { sendSuccess, sendError } from "../utils/response";
-import { validateRequired, validateObjectId } from "../utils/validate";
+import { validateRequired, validateObjectId, validateEmail } from "../utils/validate";
 import { sendInviteEmail } from "../services/email";
 
 const router = Router();
 
 router.use(authMiddleware);
+
+function validateAssignedLanguagesInput(input: unknown): string | null {
+  if (input === undefined) return null;
+  if (!Array.isArray(input)) return "Assigned languages must be an array";
+  if (input.length > 50) return "Assigned languages cannot exceed 50 entries";
+  const langRegex = /^[A-Za-z0-9-]{1,20}$/;
+  for (const lang of input) {
+    if (typeof lang !== "string" || !langRegex.test(lang)) {
+      return "Assigned languages must contain valid language codes";
+    }
+  }
+  return null;
+}
 
 // ─── LIST TEAM MEMBERS ──────────────────────────────────────
 router.get(
@@ -58,6 +71,11 @@ router.post(
 
       const emailError = validateRequired(email, "Email");
       if (emailError) return sendError(res, 400, emailError);
+      if (typeof email !== "string") return sendError(res, 400, "Invalid email format");
+      const emailFormatError = validateEmail(email);
+      if (emailFormatError) return sendError(res, 400, emailFormatError);
+      const assignedError = validateAssignedLanguagesInput(assignedLanguages);
+      if (assignedError) return sendError(res, 400, assignedError);
 
       if (role && !["translator", "viewer"].includes(role)) {
         return sendError(res, 400, "Role must be 'translator' or 'viewer'");
@@ -157,9 +175,11 @@ router.put(
       if (role && !["translator", "viewer"].includes(role)) {
         return sendError(res, 400, "Role must be 'translator' or 'viewer'");
       }
+      const assignedError = validateAssignedLanguagesInput(assignedLanguages);
+      if (assignedError) return sendError(res, 400, assignedError);
 
       if (role) member.role = role;
-      if (assignedLanguages) member.assignedLanguages = assignedLanguages;
+      if (assignedLanguages !== undefined) member.assignedLanguages = assignedLanguages;
       await member.save();
 
       return sendSuccess(res, 200, member);

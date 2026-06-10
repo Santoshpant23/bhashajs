@@ -34,7 +34,13 @@ api.interceptors.response.use(
     if (error.response?.status === 401) {
       localStorage.removeItem("bhashajs_token");
       localStorage.removeItem("bhashajs_userId");
-      window.location.href = "/login";
+      localStorage.removeItem("bhashajs_userName");
+      if (window.location.pathname === "/login") {
+        window.location.href = "/login";
+      } else {
+        const redirect = encodeURIComponent(window.location.pathname + window.location.search);
+        window.location.href = `/login?redirect=${redirect}`;
+      }
     }
     return Promise.reject(error);
   }

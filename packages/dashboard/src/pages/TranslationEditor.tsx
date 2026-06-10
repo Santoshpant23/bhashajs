@@ -43,6 +43,7 @@ import {
   Shield,
 } from "lucide-react";
 import { useNotifications } from "../context/NotificationContext";
+import { useAuth } from "../context/AuthContext";
 
 // Three registers, mirroring the server. Add new ones in lockstep here.
 type Register = "default" | "formal" | "casual";
@@ -87,12 +88,16 @@ function valueAt(t: Translation, lang: string, register: Register): string {
   if (!langMap) return "";
   return langMap[register] || langMap.default || "";
 }
+function strictValueAt(t: Translation, lang: string, register: Register): string {
+  const langMap = t.translations?.[lang];
+  if (!langMap) return "";
+  return langMap[lang === "en" ? "default" : register] ?? "";
+}
 
-/** Read the source provenance for a (lang, register) cell. */
-function sourceAt(t: Translation, lang: string, register: Register): string | undefined {
+function strictSourceAt(t: Translation, lang: string, register: Register): string | undefined {
   const langMap = t.sources?.[lang];
   if (!langMap) return undefined;
-  return langMap[register] || langMap.default;
+  return langMap[lang === "en" ? "default" : register];
 }
 
 /** Read the voice-data cell for a (lang, register), with default-register fallback. */
@@ -266,6 +271,7 @@ const RTL_LANGS = new Set(["ur", "pa-PK"]);
 export default function TranslationEditor() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
+  const { userId } = useAuth();
 
   // Core state
   const [project, setProject] = useState<Project | null>(null);
@@ -273,25 +279,27 @@ export default function TranslationEditor() {
   const [searchQuery, setSearchQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
+  const registerStorageKey = projectId ? `bhashajs_register:${projectId}` : "bhashajs_register";
 
   // Active register — drives which (lang, register) slice the editor reads
   // and which cell edits/AI runs target. Persisted to localStorage so a
   // translator who lives in "casual" mode doesn't have to reset it every visit.
   const [currentRegister, setCurrentRegister] = useState<Register>(() => {
     const saved = typeof window !== "undefined"
-      ? (window.localStorage.getItem("bhashajs_register") as Register | null)
+      ? ((window.localStorage.getItem(registerStorageKey) ||
+          window.localStorage.getItem("bhashajs_register")) as Register | null)
       : null;
     return saved && REGISTERS.includes(saved) ? saved : "default";
   });
   useEffect(() => {
     try {
-      window.localStorage.setItem("bhashajs_register", currentRegister);
+      window.localStorage.setItem(registerStorageKey, currentRegister);
     } catch { /* localStorage may be blocked — non-critical */ }
     // Re-slice stats for the new register. If the project hasn't loaded yet,
     // the initial fetch in the load effect handles the first render.
     if (project) fetchStats();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentRegister]);
+  }, [currentRegister, registerStorageKey]);
 
   // Filters
   type StatusFilter = "all" | "untranslated" | "ai-pending" | "approved";
@@ -491,6 +499,8 @@ export default function TranslationEditor() {
   const [batchLang, setBatchLang] = useState("");
   const [batchProgress, setBatchProgress] = useState("");
   const [reviewQueueMode, setReviewQueueMode] = useState(false);
+  const [approveAllRunning, setApproveAllRunning] = useState(false);
+  const [approveAllProgress, setApproveAllProgress] = useState("");
 
   // Compliance audit (owner-only) — the regulated-key trail + export.
   const [showCompliance, setShowCompliance] = useState(false);
@@ -521,6 +531,12 @@ export default function TranslationEditor() {
     }
     window.addEventListener("beforeunload", handleBeforeUnload);
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    };
   }, []);
 
   async function fetchProject() {
@@ -558,11 +574,17 @@ export default function TranslationEditor() {
       const search = searchOverride !== undefined ? searchOverride : searchQuery;
       if (search) params.set("search", search);
       const res = await api.get(`/translations/${projectId}?${params}`);
-      const { data: items, pagination: pag } = res.data.data;
+      const { data: items, pagination: pag, commentCounts: counts } = res.data.data;
       if (append) {
         setTranslations((prev) => [...prev, ...items]);
+        if (counts && typeof counts === "object") {
+          setCommentCounts((prev) => ({ ...prev, ...counts }));
+        }
       } else {
         setTranslations(items);
+        if (counts && typeof counts === "object") {
+          setCommentCounts(counts);
+        }
       }
       setPagination(pag);
     } catch (e) {
@@ -870,13 +892,22 @@ export default function TranslationEditor() {
 
   // Approve or reject an AI translation for the currently selected register
   // of a given language. Reviewing in "casual" never touches "default".
+  async function reviewTranslationRequest(
+    translationId: string,
+    lang: string,
+    action: "approve" | "reject",
+    register: Register = currentRegister
+  ) {
+    await api.post(`/translations/${translationId}/review`, {
+      lang,
+      action,
+      register,
+    });
+  }
+
   async function reviewTranslation(translationId: string, lang: string, action: "approve" | "reject") {
     try {
-      await api.post(`/translations/${translationId}/review`, {
-        lang,
-        action,
-        register: currentRegister,
-      });
+      await reviewTranslationRequest(translationId, lang, action);
       fetchTranslations();
       fetchStats();
     } catch (e) {
@@ -901,7 +932,7 @@ export default function TranslationEditor() {
   // at the currently active register.
   function missingForLang(lang: string): number {
     return translations.filter(
-      (t) => valueAt(t, "en", "default").trim() && !valueAt(t, lang, currentRegister).trim()
+      (t) => strictValueAt(t, sourceLang, "default").trim() && !strictValueAt(t, lang, currentRegister).trim()
     ).length;
   }
 
@@ -1378,6 +1409,8 @@ export default function TranslationEditor() {
   // Import dropdown options — editable languages PLUS the source/baseline
   // language (deduped), so the baseline is always importable.
   const importLangOptions = Array.from(new Set([...editableLangs, sourceLang]));
+  const effectiveImportRegister: Register =
+    importLang === "en" || importLang === sourceLang ? "default" : currentRegister;
 
   // ─── Import ──────────────────────────────────────────────────
 
@@ -1410,11 +1443,18 @@ export default function TranslationEditor() {
       // register so the import lands where the user is currently editing.
       const res = await api.post(`/translations/${projectId}/bulk`, {
         lang: importLang,
-        register: currentRegister,
+        register: effectiveImportRegister,
         translations: data,
       });
 
-      showToast(res.data.data.message);
+      const result = res.data.data;
+      showToast(result.message);
+      if (Array.isArray(result.skippedKeys) && result.skippedKeys.length > 0) {
+        const firstFive = result.skippedKeys.slice(0, 5);
+        const suffix = result.skippedKeys.length > 5 ? ", ..." : "";
+        showToast(`Skipped ${result.skipped} keys (${firstFive.join(", ")}${suffix})`, "info");
+        console.warn("BhashaJS import skipped keys:", result.skippedKeys);
+      }
       setShowImport(false);
       setImportJson("");
       fetchTranslations();
@@ -1458,11 +1498,11 @@ export default function TranslationEditor() {
     if (!project) return;
     try {
       const rows = await fetchAllForExport();
-      const exportData: Record<string, Record<string, string>> = {};
+      const exportData: Record<string, Record<string, string>> = Object.create(null);
       for (const lang of project.supportedLanguages) {
-        exportData[lang] = {};
+        exportData[lang] = Object.create(null);
         for (const t of rows) {
-          const v = valueAt(t, lang, currentRegister);
+          const v = strictValueAt(t, lang, currentRegister);
           if (v) exportData[lang][t.key] = v;
         }
       }
@@ -1479,9 +1519,9 @@ export default function TranslationEditor() {
     if (!project) return;
     try {
       const rows = await fetchAllForExport();
-      const exportData: Record<string, string> = {};
+      const exportData: Record<string, string> = Object.create(null);
       for (const t of rows) {
-        const v = valueAt(t, lang, currentRegister);
+        const v = strictValueAt(t, lang, currentRegister);
         if (v) exportData[t.key] = v;
       }
       downloadJson(exportData, `${project.name}-${lang}-${currentRegister}.json`);
@@ -1511,19 +1551,46 @@ export default function TranslationEditor() {
     URL.revokeObjectURL(url);
   }
 
+  function csvField(raw: string): string {
+    const safe = /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
+    return `"${safe.replace(/"/g, '""')}"`;
+  }
+
+  function androidResourceName(key: string): string {
+    const name = key.toLowerCase().replace(/[^a-z0-9_]/g, "_");
+    return /^\d/.test(name) ? `_${name}` : name;
+  }
+
+  function escapeAndroidString(value: string): string {
+    return value
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, '\\"')
+      .replace(/'/g, "\\'");
+  }
+
+  function escapeIOSString(value: string): string {
+    return value
+      .replace(/\\/g, "\\\\")
+      .replace(/\r/g, "\\r")
+      .replace(/\n/g, "\\n")
+      .replace(/"/g, '\\"');
+  }
+
   // Export as CSV (all languages) at the active register.
   async function exportCSV() {
     if (!project) return;
     try {
       const allRows = await fetchAllForExport();
       const langs = project.supportedLanguages;
-      const header = ["key", ...langs].map((h) => `"${h}"`).join(",");
+      const header = ["key", ...langs].map(csvField).join(",");
       const rows = allRows.map((t) => {
         const cols = [
-          `"${t.key.replace(/"/g, '""')}"`,
+          csvField(t.key),
           ...langs.map((lang) => {
-            const val = valueAt(t, lang, currentRegister).replace(/"/g, '""');
-            return `"${val}"`;
+            const val = strictValueAt(t, lang, currentRegister);
+            return csvField(val);
           }),
         ];
         return cols.join(",");
@@ -1542,10 +1609,10 @@ export default function TranslationEditor() {
       const rows = await fetchAllForExport();
       const lines = ['<?xml version="1.0" encoding="utf-8"?>', "<resources>"];
       for (const t of rows) {
-        const val = valueAt(t, lang, currentRegister);
+        const val = strictValueAt(t, lang, currentRegister);
         if (!val) continue;
-        const escaped = val.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/'/g, "\\'");
-        const resName = t.key.replace(/\./g, "_");
+        const escaped = escapeAndroidString(val);
+        const resName = androidResourceName(t.key);
         lines.push(`  <string name="${resName}">${escaped}</string>`);
       }
       lines.push("</resources>");
@@ -1563,10 +1630,10 @@ export default function TranslationEditor() {
       const rows = await fetchAllForExport();
       const lines = [`/* ${project.name} — ${lang} (${currentRegister}) */`, ""];
       for (const t of rows) {
-        const val = valueAt(t, lang, currentRegister);
+        const val = strictValueAt(t, lang, currentRegister);
         if (!val) continue;
         if (t.context) lines.push(`/* ${t.context} */`);
-        lines.push(`"${t.key}" = "${val.replace(/"/g, '\\"')}";`);
+        lines.push(`"${t.key}" = "${escapeIOSString(val)}";`);
         lines.push("");
       }
       downloadBlob(lines.join("\n"), `${lang}-${currentRegister}.strings`, "text/plain");
@@ -1582,7 +1649,7 @@ export default function TranslationEditor() {
   function missingCount(translation: Translation): number {
     if (!project) return 0;
     return project.supportedLanguages.filter(
-      (lang) => !valueAt(translation, lang, currentRegister).trim()
+      (lang) => !strictValueAt(translation, lang, currentRegister).trim()
     ).length;
   }
 
@@ -1615,31 +1682,64 @@ export default function TranslationEditor() {
     if (statusFilter !== "all") {
       if (langFilter !== "all") {
         // Apply to specific language at the active register
-        const src = sourceAt(t, langFilter, currentRegister);
-        if (statusFilter === "untranslated" && valueAt(t, langFilter, currentRegister).trim()) return false;
+        const src = strictSourceAt(t, langFilter, currentRegister);
+        if (statusFilter === "untranslated" && strictValueAt(t, langFilter, currentRegister).trim()) return false;
         if (statusFilter === "ai-pending" && src !== "ai") return false;
         if (statusFilter === "approved" && src !== "approved") return false;
       } else {
         // Apply across all languages at the active register
         if (statusFilter === "untranslated") {
           const hasMissing = project?.supportedLanguages.some(
-            (lang) => lang !== "en" && !valueAt(t, lang, currentRegister).trim()
+            (lang) => lang !== sourceLang && !strictValueAt(t, lang, currentRegister).trim()
           );
           if (!hasMissing) return false;
         } else if (statusFilter === "ai-pending") {
-          const hasAI = project?.supportedLanguages.some((lang) => sourceAt(t, lang, currentRegister) === "ai");
+          const hasAI = project?.supportedLanguages.some((lang) => strictSourceAt(t, lang, currentRegister) === "ai");
           if (!hasAI) return false;
         } else if (statusFilter === "approved") {
-          const hasApproved = project?.supportedLanguages.some((lang) => sourceAt(t, lang, currentRegister) === "approved");
+          const hasApproved = project?.supportedLanguages.some((lang) => strictSourceAt(t, lang, currentRegister) === "approved");
           if (!hasApproved) return false;
         }
       }
     } else if (langFilter !== "all") {
       // Language-only filter: show keys missing this language at the active register
-      if (valueAt(t, langFilter, currentRegister).trim()) return false;
+      if (strictValueAt(t, langFilter, currentRegister).trim()) return false;
     }
     return true;
   });
+  const approveAllTargets =
+    reviewQueueMode && langFilter !== "all"
+      ? filtered.filter((t) => strictSourceAt(t, langFilter, currentRegister) === "ai")
+      : [];
+
+  async function approveAllAITranslations() {
+    if (langFilter === "all" || approveAllTargets.length === 0) return;
+    const lang = langFilter;
+    const register = currentRegister;
+    const targets = [...approveAllTargets];
+    const total = targets.length;
+    if (!window.confirm(`Approve all ${total} AI translations for ${LANG_NAMES[lang] || lang}?`)) {
+      return;
+    }
+
+    setApproveAllRunning(true);
+    let succeeded = 0;
+    try {
+      for (const t of targets) {
+        setApproveAllProgress(`Approving ${succeeded + 1}/${total}...`);
+        await reviewTranslationRequest(t._id, lang, "approve", register);
+        succeeded++;
+      }
+      showToast(`Approved ${succeeded} AI translations`);
+    } catch (e) {
+      showToast(`Approve all stopped after ${succeeded}/${total}: ${getErrorMessage(e)}`, "error");
+    } finally {
+      await fetchTranslations();
+      await fetchStats();
+      setApproveAllRunning(false);
+      setApproveAllProgress("");
+    }
+  }
 
   // Get the preview translation for a given key
   const previewTranslation = translations.find((t) => t.key === previewKey);
@@ -2143,7 +2243,7 @@ export default function TranslationEditor() {
                   placeholder="e.g. hero.title, nav.home, footer.copyright"
                   autoFocus
                 />
-                <span className="form-hint">Only lowercase letters, numbers, dots, and underscores</span>
+                <span className="form-hint">Letters, numbers, dots, underscores, and hyphens; must start with a letter or number</span>
               </div>
               <div className="form-group">
                 <label>Context (optional)</label>
@@ -2494,8 +2594,11 @@ export default function TranslationEditor() {
                 />
                 <span className="form-hint">
                   Flat JSON format. New keys will be created, existing keys will be updated.
-                  Imports the <strong>{REGISTER_LABELS[currentRegister]}</strong> register
-                  for {LANG_NAMES[importLang] || importLang} — switch the register tab above to import elsewhere.
+                  Imports the <strong>{REGISTER_LABELS[effectiveImportRegister]}</strong> register
+                  for {LANG_NAMES[importLang] || importLang}.{" "}
+                  {effectiveImportRegister === "default" && (importLang === "en" || importLang === sourceLang)
+                    ? "Source-language imports always use Default."
+                    : "Switch the register tab above to import elsewhere."}
                 </span>
               </div>
               <div className="modal-actions">
@@ -2670,11 +2773,22 @@ export default function TranslationEditor() {
         {reviewQueueMode && (
           <div className="review-queue-header">
             <span className="review-queue-title">
-              Review Queue — {filtered.length} AI translations for {LANG_NAMES[langFilter] || langFilter}
+              {approveAllRunning
+                ? approveAllProgress
+                : `Review Queue - ${approveAllTargets.length} AI translations for ${LANG_NAMES[langFilter] || langFilter}`}
             </span>
-            <button className="btn-ghost" onClick={exitReviewQueue}>
-              <X size={14} /> Exit Review
-            </button>
+            <div className="review-queue-actions">
+              <button
+                className="btn-review-approve"
+                onClick={approveAllAITranslations}
+                disabled={approveAllRunning || approveAllTargets.length === 0 || langFilter === "all"}
+              >
+                <Check size={14} /> Approve all ({approveAllTargets.length})
+              </button>
+              <button className="btn-ghost" onClick={exitReviewQueue} disabled={approveAllRunning}>
+                <X size={14} /> Exit Review
+              </button>
+            </div>
           </div>
         )}
 
@@ -2773,7 +2887,7 @@ export default function TranslationEditor() {
                         formal/casual variants in this product. */}
                     {project?.supportedLanguages.map((lang, colIdx) => {
                       const langRegister = lang === "en" ? "default" : currentRegister;
-                      const langSource = sourceAt(t, lang, langRegister);
+                      const langSource = strictSourceAt(t, lang, langRegister);
                       const isAI = langSource === "ai";
                       const isApproved = langSource === "approved";
                       const editable = canEditLang(lang);
@@ -2914,7 +3028,7 @@ export default function TranslationEditor() {
                         {saving === t._id && (
                           <span className="save-indicator"><Save size={14} /></span>
                         )}
-                        {reviewQueueMode && langFilter !== "all" && sourceAt(t, langFilter, currentRegister) === "ai" && (
+                        {reviewQueueMode && langFilter !== "all" && strictSourceAt(t, langFilter, currentRegister) === "ai" && (
                           <>
                             <button
                               className="btn-review-approve"
@@ -2972,7 +3086,7 @@ export default function TranslationEditor() {
                                     <span className="comment-time">
                                       {new Date(c.createdAt).toLocaleString()}
                                     </span>
-                                    {(isOwner || c.userId?._id === "self") && (
+                                    {(isOwner || c.userId?._id === userId) && (
                                       <button
                                         className="btn-icon comment-delete"
                                         onClick={() => deleteComment(c._id, t._id)}
@@ -3075,18 +3189,5 @@ export default function TranslationEditor() {
         ))}
       </div>
     </div>
-  );
-}
-
-// Local Globe SVG component (to avoid importing from lucide twice)
-function Globe(props: any) {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" width={props.size || 24} height={props.size || 24}
-      viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={props.strokeWidth || 2}
-      strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="10" />
-      <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" />
-      <path d="M2 12h20" />
-    </svg>
   );
 }

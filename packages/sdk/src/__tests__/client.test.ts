@@ -1,11 +1,49 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { TranslationClient } from "../core/client";
+
+const originalFetch = globalThis.fetch;
+const originalLocalStorage = (globalThis as any).localStorage;
+
+function installLocalStorage(initial: Record<string, string> = {}) {
+  const data = new Map(Object.entries(initial));
+  const storage = {
+    get length() {
+      return data.size;
+    },
+    clear: vi.fn(() => data.clear()),
+    getItem: vi.fn((key: string) => data.get(key) ?? null),
+    key: vi.fn((index: number) => Array.from(data.keys())[index] ?? null),
+    removeItem: vi.fn((key: string) => {
+      data.delete(key);
+    }),
+    setItem: vi.fn((key: string, value: string) => {
+      data.set(key, value);
+    }),
+  };
+  Object.defineProperty(globalThis, "localStorage", {
+    value: storage,
+    configurable: true,
+  });
+  return { storage, data };
+}
+
+function tick() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
 
 describe("TranslationClient", () => {
   let client: TranslationClient;
 
   beforeEach(() => {
     client = new TranslationClient("test-project", "http://localhost:5000/api", "");
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (originalLocalStorage === undefined) Reflect.deleteProperty(globalThis, "localStorage");
+    else Object.defineProperty(globalThis, "localStorage", { value: originalLocalStorage, configurable: true });
+    if (originalFetch === undefined) Reflect.deleteProperty(globalThis, "fetch");
+    else Object.defineProperty(globalThis, "fetch", { value: originalFetch, configurable: true });
   });
 
   describe("preload — legacy flat shape", () => {
@@ -61,6 +99,10 @@ describe("TranslationClient", () => {
 
     it("returns key itself when nothing found", () => {
       expect(client.translate("missing.key", "hi")).toBe("missing.key");
+    });
+
+    it("does not resolve inherited Object prototype keys as translations", () => {
+      expect(client.translate("constructor", "hi")).toBe("constructor");
     });
   });
 
@@ -257,6 +299,150 @@ describe("TranslationClient", () => {
     it("can be set", () => {
       client.setSupportedLangs(["en", "hi", "bn"]);
       expect(client.getSupportedLangs()).toEqual(["en", "hi", "bn"]);
+    });
+  });
+
+  describe("localStorage persistence", () => {
+    it("serves a stored bundle immediately without waiting for the network", async () => {
+      installLocalStorage({
+        "bhashajs:b1:test-project:hi:default": JSON.stringify({
+          v: 1,
+          t: Date.now(),
+          data: { greeting: "cached" },
+        }),
+      });
+      vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+
+      const data = await client.fetchTranslations("hi");
+
+      expect(data.greeting).toBe("cached");
+      expect(client.translate("greeting", "hi")).toBe("cached");
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("refreshes stored bundles in the background and notifies listeners", async () => {
+      const { data: stored } = installLocalStorage({
+        "bhashajs:b1:test-project:hi:default": JSON.stringify({
+          v: 1,
+          t: Date.now(),
+          data: { greeting: "cached" },
+        }),
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ data: { greeting: "fresh" } }),
+        })
+      );
+      const onUpdate = vi.fn();
+      client.setOnBundleUpdate(onUpdate);
+
+      const data = await client.fetchTranslations("hi");
+      expect(data.greeting).toBe("cached");
+
+      await tick();
+
+      expect(onUpdate).toHaveBeenCalledTimes(1);
+      expect(client.translate("greeting", "hi")).toBe("fresh");
+      const saved = JSON.parse(stored.get("bhashajs:b1:test-project:hi:default")!);
+      expect(saved.data.greeting).toBe("fresh");
+    });
+
+    it("ignores storage errors and still fetches from the network", async () => {
+      Object.defineProperty(globalThis, "localStorage", {
+        configurable: true,
+        value: {
+          getItem: vi.fn(() => {
+            throw new Error("blocked");
+          }),
+          setItem: vi.fn(() => {
+            throw new Error("quota");
+          }),
+        },
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ data: { greeting: "network" } }),
+        })
+      );
+
+      const data = await client.fetchTranslations("hi");
+
+      expect(data.greeting).toBe("network");
+      expect(client.translate("greeting", "hi")).toBe("network");
+    });
+
+    it("falls back to persisted supported langs when project info fails with a NETWORK error", async () => {
+      installLocalStorage({
+        "bhashajs:p1:test-project": JSON.stringify({ v: 1, t: Date.now(), langs: ["en", "hi"] }),
+      });
+      vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
+
+      const langs = await client.fetchProjectInfo();
+
+      expect(langs).toEqual(["en", "hi"]);
+      expect(client.getSupportedLangs()).toEqual(["en", "hi"]);
+    });
+
+    it("does NOT mask an HTTP error (e.g. revoked key) with persisted langs", async () => {
+      installLocalStorage({
+        "bhashajs:p1:test-project": JSON.stringify({ v: 1, t: Date.now(), langs: ["en", "hi"] }),
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue({
+          ok: false,
+          status: 401,
+          text: async () => "Invalid API key",
+        })
+      );
+
+      await expect(client.fetchProjectInfo()).rejects.toThrow(/HTTP 401/);
+    });
+
+    it("persists supported langs after a successful project-info fetch", async () => {
+      const { data: stored } = installLocalStorage();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ data: { supportedLanguages: ["en", "ta"] } }),
+        })
+      );
+
+      await client.fetchProjectInfo();
+
+      const saved = JSON.parse(stored.get("bhashajs:p1:test-project")!);
+      expect(saved.langs).toEqual(["en", "ta"]);
+    });
+
+    it("skips storage entirely when persistCache is false", async () => {
+      const { storage } = installLocalStorage({
+        "bhashajs:b1:test-project:hi:default": JSON.stringify({
+          v: 1,
+          t: Date.now(),
+          data: { greeting: "cached" },
+        }),
+      });
+      client = new TranslationClient("test-project", "http://localhost:5000/api", "", "", {
+        persistCache: false,
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ data: { greeting: "network" } }),
+        })
+      );
+
+      const data = await client.fetchTranslations("hi");
+
+      expect(data.greeting).toBe("network");
+      expect(storage.getItem).not.toHaveBeenCalled();
+      expect(storage.setItem).not.toHaveBeenCalled();
     });
   });
 });

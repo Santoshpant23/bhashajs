@@ -6,8 +6,8 @@
  * Token is stored in localStorage so it persists across refreshes.
  */
 
-import { createContext, useContext, useState, useEffect, ReactNode } from "react";
-import api, { getErrorMessage } from "../utils/api";
+import { createContext, useContext, useState, ReactNode } from "react";
+import api from "../utils/api";
 
 interface AuthContextType {
   isLoggedIn: boolean;
@@ -20,22 +20,24 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
-export function AuthProvider({ children }: { children: ReactNode }) {
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [userId, setUserId] = useState<string | null>(null);
-  const [userName, setUserName] = useState<string | null>(null);
+function getStoredItem(key: string): string | null {
+  try {
+    return typeof window !== "undefined" ? window.localStorage.getItem(key) : null;
+  } catch {
+    return null;
+  }
+}
 
-  // On app load, check if we already have a saved session
-  useEffect(() => {
-    const token = localStorage.getItem("bhashajs_token");
-    const savedUserId = localStorage.getItem("bhashajs_userId");
-    const savedUserName = localStorage.getItem("bhashajs_userName");
-    if (token && savedUserId) {
-      setIsLoggedIn(true);
-      setUserId(savedUserId);
-      setUserName(savedUserName);
-    }
-  }, []);
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const [isLoggedIn, setIsLoggedIn] = useState(
+    () => !!getStoredItem("bhashajs_token") && !!getStoredItem("bhashajs_userId")
+  );
+  const [userId, setUserId] = useState<string | null>(() =>
+    getStoredItem("bhashajs_token") ? getStoredItem("bhashajs_userId") : null
+  );
+  const [userName, setUserName] = useState<string | null>(() =>
+    getStoredItem("bhashajs_token") ? getStoredItem("bhashajs_userName") : null
+  );
 
   async function login(email: string, password: string) {
     // API returns { success: true, data: { token, userId, name } }

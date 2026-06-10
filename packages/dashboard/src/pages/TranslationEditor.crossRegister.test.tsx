@@ -46,6 +46,10 @@ vi.mock("../context/NotificationContext", () => ({
   }),
 }));
 
+vi.mock("../context/AuthContext", () => ({
+  useAuth: () => ({ userId: "u1" }),
+}));
+
 vi.mock("react-router-dom", () => ({
   useParams: () => ({ projectId: "p1" }),
   useNavigate: () => vi.fn(),

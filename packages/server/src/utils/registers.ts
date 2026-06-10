@@ -97,6 +97,30 @@ export function writeVoiceCell(
   }
 }
 
+/**
+ * Delete a voice cell — voice[lang][register] — on a Translation doc (Map or
+ * plain-object shape). Used to invalidate stale IPA/SSML whenever the TEXT of
+ * that same (lang, register) cell is overwritten or removed: voice generated
+ * from old text must never keep serving after the text changes.
+ */
+export function deleteVoiceCell(doc: any, lang: string, register: Register): boolean {
+  const outer = doc.voice;
+  if (!outer) return false;
+  const inner = outer instanceof Map ? outer.get(lang) : outer[lang];
+  if (!inner) return false;
+  let existed = false;
+  if (inner instanceof Map) {
+    existed = inner.delete(register);
+  } else {
+    existed = Object.prototype.hasOwnProperty.call(inner, register);
+    delete inner[register];
+  }
+  if (existed && typeof doc.markModified === "function") {
+    doc.markModified("voice");
+  }
+  return existed;
+}
+
 /** Delete a (lang, register) cell. Returns true if the cell existed. */
 export function deleteValue(
   doc: any,

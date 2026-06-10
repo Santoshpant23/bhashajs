@@ -6,6 +6,11 @@ All notable changes to `bhasha-js` are documented here.
 
 A hardening release: correctness fixes across the engine, the CLI, and pluralization, plus stronger error handling. Backward compatible except for the plural-fallback correction noted below.
 
+### Added
+- **Offline/first-paint bundle cache.** Text bundles now persist to `localStorage` by default and load stale-while-revalidate; `persistCache: false` disables it. React and vanilla stores repaint when a background refresh changes copy.
+- **`bhasha push`.** The CLI can push flat or nested locale JSON to the hosted/self-hosted dashboard using a write-capable scoped API key, and reports regulated keys that require human dashboard edits.
+- **Nested locale JSON support.** `bhasha pull`, `bhasha scan`, and `bhasha push` flatten nested locale files with dot-joined keys.
+
 ### Fixed
 - **Language/register switches could wedge the loading spinner forever and throw an unhandled rejection.** v0.3 guarded `init()`, but `setLang`/`setRegister`/`setSegment` did not — a failed fetch during a switch left `isLoading: true` with no error and rejected un-awaited. They now surface the error, clear loading, and never reject.
 - **Interleaved language + register switches could commit a `(lang, register)` pair whose bundle was never fetched.** The two dimensions used separate request counters, so e.g. `setLang("hi")` + `setRegister("formal")` fired together could settle on `hi/formal` while only fetching `hi/default` and `en/formal`. The locale is now a single atomic target — an interleaved switch always fetches and commits the final pair (last-requested wins).

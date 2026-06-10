@@ -27,6 +27,10 @@ function getTransporter(): Transporter | null {
   const user = process.env.SMTP_USER;
   const pass = process.env.SMTP_PASS;
 
+  if (process.env.NODE_ENV === "test") {
+    return null;
+  }
+
   if (!host || !port || !user || !pass) {
     console.warn(
       "[email] SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASS not all set — emails will be logged to console only."
@@ -50,6 +54,11 @@ interface SendInviteEmailArgs {
   projectName: string;
   role: string;
   inviteToken: string;
+}
+
+interface SendPasswordResetEmailArgs {
+  to: string;
+  resetLink: string;
 }
 
 export async function sendInviteEmail({
@@ -147,6 +156,92 @@ export async function sendInviteEmail({
   } catch (e) {
     console.error(`[email] Failed to send invite to ${to}:`, e);
     // Non-fatal — the invite link is still valid, owner can copy/share manually.
+  }
+}
+
+export async function sendPasswordResetEmail({
+  to,
+  resetLink,
+}: SendPasswordResetEmailArgs): Promise<void> {
+  const from = process.env.SMTP_FROM || "BhashaJS <noreply@bhashajs.com>";
+  const subject = "Reset your BhashaJS password";
+
+  const text = [
+    "Hi,",
+    "",
+    "We received a request to reset your BhashaJS password.",
+    "",
+    "Reset your password by visiting:",
+    resetLink,
+    "",
+    "This link expires in 60 minutes. If you did not request this, you can ignore this email.",
+    "",
+    "BhashaJS",
+    "https://bhashajs.com",
+  ].join("\n");
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${escapeHtml(subject)}</title>
+</head>
+<body style="margin:0;padding:0;background:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f5f5f7;padding:40px 20px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:12px;border:1px solid #e7e7eb;overflow:hidden;">
+          <tr>
+            <td style="padding:32px 40px;border-bottom:1px solid #f0f0f4;">
+              <span style="font-family:'Noto Sans Devanagari',serif;font-size:24px;font-weight:700;color:#FF6B2C;">भा</span>
+              <span style="font-size:18px;font-weight:600;color:#0E1116;margin-left:6px;vertical-align:middle;">bhasha-js</span>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:40px;">
+              <h1 style="margin:0 0 16px;font-size:22px;color:#0E1116;line-height:1.3;">Reset your password</h1>
+              <p style="margin:0 0 16px;color:#4a5260;font-size:15px;line-height:1.6;">
+                We received a request to reset your BhashaJS password. This link expires in 60 minutes.
+              </p>
+              <table role="presentation" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="border-radius:8px;background:#FF6B2C;">
+                    <a href="${escapeHtml(resetLink)}" style="display:inline-block;padding:12px 28px;color:#ffffff;text-decoration:none;font-weight:600;font-size:15px;">
+                      Reset password
+                    </a>
+                  </td>
+                </tr>
+              </table>
+              <p style="margin:32px 0 0;color:#8a92a0;font-size:13px;line-height:1.6;">
+                Or paste this link into your browser:<br/>
+                <a href="${escapeHtml(resetLink)}" style="color:#5b6470;word-break:break-all;">${escapeHtml(resetLink)}</a>
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:24px 40px;background:#fafafc;border-top:1px solid #f0f0f4;color:#8a92a0;font-size:12px;text-align:center;">
+              If you did not request this password reset, you can safely ignore this email.
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+
+  const t = getTransporter();
+  if (!t) {
+    console.log(`[email] (dry-run, SMTP not configured) Password reset for ${to}: ${resetLink}`);
+    return;
+  }
+
+  try {
+    await t.sendMail({ from, to, subject, text, html });
+    console.log(`[email] Password reset sent to ${to}`);
+  } catch (e) {
+    console.error(`[email] Failed to send password reset to ${to}:`, e);
   }
 }
 

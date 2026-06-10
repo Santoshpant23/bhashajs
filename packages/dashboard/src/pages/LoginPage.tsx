@@ -22,7 +22,8 @@ export default function LoginPage() {
 
   // Honor ?redirect= so an invite link can route through login and back to /join.
   const redirect = searchParams.get("redirect");
-  const safeRedirect = redirect && redirect.startsWith("/") ? redirect : "/projects";
+  const redirectParam = redirect && /^\/(?![/\\])/.test(redirect) ? redirect : null;
+  const safeRedirect = redirectParam || "/projects";
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -72,11 +73,14 @@ export default function LoginPage() {
           <button type="submit" className="btn-primary" disabled={loading}>
             {loading ? "Signing in..." : "Sign In"}
           </button>
+          <p className="auth-footer">
+            <Link to="/forgot-password">Forgot password?</Link>
+          </p>
         </form>
 
         <p className="auth-footer">
           Don't have an account?{" "}
-          <Link to={redirect ? `/register?redirect=${encodeURIComponent(redirect)}` : "/register"}>
+          <Link to={redirectParam ? `/register?redirect=${encodeURIComponent(redirectParam)}` : "/register"}>
             Create one
           </Link>
         </p>
